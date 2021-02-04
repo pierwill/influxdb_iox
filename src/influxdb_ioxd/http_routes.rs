@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{OptionExt, ResultExt, Snafu};
 use tracing::{debug, error, info};
 
+use std::borrow::Cow;
 use std::{fmt::Debug, str, sync::Arc};
 
 #[derive(Debug, Snafu)]
@@ -236,6 +237,21 @@ fn router<M>(server: Arc<AppServer<M>>) -> Router<Body, ApplicationError>
 where
     M: ConnectionManager + Send + Sync + Debug + 'static,
 {
+    // TODO(tustvold): Custom API builder for more descriptive output
+    let routes = Router::builder()
+        // this endpoint is for API backward compatibility with InfluxDB 2.x
+        .post("/api/v2/write", write::<M>)
+        .get("/api/v2/read", read::<M>)
+        .get("/ping", ping)
+        .put("/iox/api/v1/databases/:name", create_database::<M>)
+        .get("/iox/api/v1/databases/:name", get_database::<M>)
+        .put("/iox/api/v1/id", set_writer::<M>)
+        .get("/api/v1/partitions", list_partitions::<M>)
+        .post("/api/v1/snapshot", snapshot_partition::<M>)
+        .build()
+        .unwrap();
+    let api_description: Cow<'_, str> = format!("{:?}", routes).into();
+
     // Create a router and specify the the handlers.
     Router::builder()
         .data(server)
@@ -246,15 +262,16 @@ where
         .middleware(Middleware::post(|res| async move {
             info!(response = ?res, "Successfully processed request");
             Ok(res)
-        })) // this endpoint is for API backward compatibility with InfluxDB 2.x
-        .post("/api/v2/write", write::<M>)
-        .get("/ping", ping)
-        .get("/api/v2/read", read::<M>)
-        .put("/iox/api/v1/databases/:name", create_database::<M>)
-        .get("/iox/api/v1/databases/:name", get_database::<M>)
-        .put("/iox/api/v1/id", set_writer::<M>)
-        .get("/api/v1/partitions", list_partitions::<M>)
-        .post("/api/v1/snapshot", snapshot_partition::<M>)
+        }))
+        .scope("", routes)
+        .get("/", move |_| {
+            let response = Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::from(api_description.clone()))
+                .unwrap();
+
+            futures::future::ok(response)
+        })
         // Specify the error handler to handle any errors caused by
         // a route or any middleware.
         .err_handler_with_info(error_handler)
