@@ -186,3 +186,13 @@ cargo clippy --all-targets --workspace -- -D warnings
 
 [`rustfmt`]: https://github.com/rust-lang/rustfmt
 [`clippy`]: https://github.com/rust-lang/rust-clippy
+
+## Pre-Commit Hook
+
+A pre-commit hook is provided that will automatically format your code prior to submission. 
+
+It can be installed by running the below from the root directory of the repository
+
+```shell
+ln -s ../../.githooks/pre-commit .git/hooks/pre-commit
+```
