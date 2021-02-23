@@ -68,6 +68,12 @@ jobs:
             target/*/gn_out
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Print cargo size metadata
+        run: du -sh .cargo/*
+
+      - name: Print target size metadata
+        run: du -sh target/*/*/*
+
       - name: Cargo Format
         uses: actions-rs/cargo@v1
         with:
