@@ -31,82 +31,69 @@ name: ci
 
 jobs:
 
-  build:
-    name: Build
+  ci:
+    name: Lint, Build, and Test
     runs-on: ubuntu-latest
     container:
       image: quay.io/influxdb/rust:ci
       # Run as the "root" user in the build container to fix workspace & cache
       # permission errors.
       options: --user root
+    env:
+      CARGO_INCREMENTAL: 0
     steps:
       # Checkout the code
-      - uses: actions/checkout@v2
+      - name: Clone repository
+        uses: actions/checkout@v2
+
+      - name: Configure cargo data directory
+        # After this point, all cargo registry and crate data is stored in
+        # $GITHUB_WORKSPACE/.cargo. This allows us to cache only the files that
+        # are needed during the build process. Additionally, this works around
+        # a bug in the 'cache' action that causes directories outside of the
+        # workspace dir to be saved/restored incorrectly.
+        run: echo "CARGO_HOME=$PWD/.cargo" >> $GITHUB_ENV
 
       # Enable caching of build artefacts
-      - uses: actions/cache@v2
+      - name: Cache
+        uses: actions/cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
+          # Only cache those subdirectories of target/{debug|release} that
+          # contain the build output for crates that come from the registry.
+          path: |-
+            .cargo
+            target/*/.*
+            target/*/build
+            target/*/deps
+            target/*/gn_out
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      # Build!
+      - name: Cargo Format
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+      - name: Clippy Check
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: --all-targets --workspace -- -D warnings
+
       - name: Run dev build
         uses: actions-rs/cargo@v1
         with:
           command: build
           args: --workspace
-      # Ensure benches still build
+
       - name: Build Benches
         uses: actions-rs/cargo@v1
         with:
           command: test
           args: --workspace --benches --no-run
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    container:
-      image: quay.io/influxdb/rust:ci
-      options: --user root
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Run tests
         uses: actions-rs/cargo@v1
         with:
           command: test
           args: --workspace
-
-  lints:
-    name: Lints
-    runs-on: ubuntu-latest
-    container:
-      image: quay.io/influxdb/rust:ci
-      options: --user root
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - name: Run cargo fmt
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
-      - uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-targets --workspace -- -D warnings
