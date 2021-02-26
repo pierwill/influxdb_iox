@@ -1,7 +1,7 @@
 //! This module contains code to report compression statistics for storage files
 
+use clap::Clap;
 use snafu::{ResultExt, Snafu};
-use structopt::StructOpt;
 use tracing::info;
 
 use ingest::parquet::{error::IOxParquetError, stats as parquet_stats};
@@ -29,17 +29,17 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// Print out storage statistics information to stdout.
 ///
 /// If a directory is specified, checks all files recursively
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clap)]
 pub struct Config {
     /// The input filename or directory to read from
     input: String,
 
     /// Include detailed information per column
-    #[structopt(long)]
+    #[clap(long)]
     per_column: bool,
 
     /// Include detailed information per file
-    #[structopt(long)]
+    #[clap(long)]
     per_file: bool,
 }
 

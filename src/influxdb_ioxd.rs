@@ -50,7 +50,7 @@ pub enum Error {
     ServingRPC { source: self::rpc::Error },
 
     #[snafu(display(
-        "Specified {} for the object store, required configuration missing for {}",
+        "Specified {:?} for the object store, required configuration missing for {}",
         object_store,
         missing
     ))]
@@ -97,7 +97,7 @@ pub async fn main(logging_level: LoggingLevel, config: Option<Box<Config>>) -> R
             warn!("NO PERSISTENCE: using Memory for object storage");
         }
         Some(store) => {
-            info!("Using {} for object storage", store);
+            info!("Using {:?} for object storage", store);
         }
     }
 
@@ -280,13 +280,13 @@ impl TryFrom<&Config> for ObjectStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Clap;
     use object_store::ObjectStoreIntegration;
-    use structopt::StructOpt;
     use tempfile::TempDir;
 
     #[test]
     fn default_object_store_is_memory() {
-        let config = Config::from_iter_safe(&["server"]).unwrap();
+        let config = Config::try_parse_from(&["server"]).unwrap();
 
         let object_store = ObjectStore::try_from(&config).unwrap();
 
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn explicitly_set_object_store_to_memory() {
-        let config = Config::from_iter_safe(&["server", "--object-store", "memory"]).unwrap();
+        let config = Config::try_parse_from(&["server", "--object-store", "memory"]).unwrap();
 
         let object_store = ObjectStore::try_from(&config).unwrap();
 
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn valid_s3_config() {
-        let config = Config::from_iter_safe(&[
+        let config = Config::try_parse_from(&[
             "server",
             "--object-store",
             "s3",
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn s3_config_missing_params() {
-        let config = Config::from_iter_safe(&["server", "--object-store", "s3"]).unwrap();
+        let config = Config::try_parse_from(&["server", "--object-store", "s3"]).unwrap();
 
         let err = ObjectStore::try_from(&config).unwrap_err().to_string();
 
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn valid_google_config() {
-        let config = Config::from_iter_safe(&[
+        let config = Config::try_parse_from(&[
             "server",
             "--object-store",
             "google",
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn google_config_missing_params() {
-        let config = Config::from_iter_safe(&["server", "--object-store", "google"]).unwrap();
+        let config = Config::try_parse_from(&["server", "--object-store", "google"]).unwrap();
 
         let err = ObjectStore::try_from(&config).unwrap_err().to_string();
 
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn valid_azure_config() {
-        let config = Config::from_iter_safe(&[
+        let config = Config::try_parse_from(&[
             "server",
             "--object-store",
             "azure",
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn azure_config_missing_params() {
-        let config = Config::from_iter_safe(&["server", "--object-store", "azure"]).unwrap();
+        let config = Config::try_parse_from(&["server", "--object-store", "azure"]).unwrap();
 
         let err = ObjectStore::try_from(&config).unwrap_err().to_string();
 
@@ -418,7 +418,7 @@ mod tests {
     fn valid_file_config() {
         let root = TempDir::new().unwrap();
 
-        let config = Config::from_iter_safe(&[
+        let config = Config::try_parse_from(&[
             "server",
             "--object-store",
             "file",
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn file_config_missing_params() {
-        let config = Config::from_iter_safe(&["server", "--object-store", "file"]).unwrap();
+        let config = Config::try_parse_from(&["server", "--object-store", "file"]).unwrap();
 
         let err = ObjectStore::try_from(&config).unwrap_err().to_string();
 

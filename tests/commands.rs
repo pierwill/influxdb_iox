@@ -58,7 +58,7 @@ fn convert_bad_compression_level() {
         .arg("/tmp")
         .assert();
 
-    assert.failure().code(1).stderr(predicate::str::contains(
+    assert.failure().code(2).stderr(predicate::str::contains(
         "error: 'maxxx' isn't a valid value for '--compression-level <compression-level>",
     ));
 }

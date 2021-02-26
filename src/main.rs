@@ -9,8 +9,8 @@
 
 use std::str::FromStr;
 
+use clap::Clap;
 use dotenv::dotenv;
-use structopt::StructOpt;
 use tokio::runtime::Runtime;
 use tracing::{debug, error, warn};
 
@@ -34,8 +34,8 @@ enum ReturnCode {
     Failure = 1,
 }
 
-#[derive(Debug, StructOpt)]
-#[structopt(
+#[derive(Debug, Clap)]
+#[clap(
     name = "influxdb_iox",
     about = "InfluxDB IOx server and command line tools",
     long_about = r#"InfluxDB IOx server and command line tools
@@ -64,11 +64,11 @@ Examples:
 "#
 )]
 struct Config {
-    #[structopt(short, long, parse(from_occurrences))]
+    #[clap(short, long, parse(from_occurrences))]
     verbose: u64,
 
     /// gRPC address of IOx server to connect to
-    #[structopt(
+    #[clap(
         short,
         long,
         global = true,
@@ -77,16 +77,16 @@ struct Config {
     )]
     host: String, /* TODO: This must be on the root due to https://github.com/clap-rs/clap/pull/2253 */
 
-    #[structopt(long)]
+    #[clap(long)]
     /// Set the maximum number of threads to use. Defaults to the number of
     /// cores on the system
     num_threads: Option<usize>,
 
-    #[structopt(subcommand)]
+    #[clap(subcommand)]
     command: Option<Command>,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clap)]
 enum Command {
     /// Convert one storage format to another
     Convert {
@@ -97,7 +97,7 @@ enum Command {
         /// How much to compress the output data. 'max' compresses the most;
         /// 'compatibility' compresses in a manner more likely to be readable by
         /// other tools.
-        #[structopt(
+        #[clap(
         short, long, default_value = "compatibility",
         possible_values = & ["max", "compatibility"])]
         compression_level: String,
@@ -119,7 +119,7 @@ fn main() -> Result<(), std::io::Error> {
     // load all environment variables from .env before doing anything
     load_dotenv();
 
-    let config = Config::from_args();
+    let config = Config::parse();
 
     // Logging level is determined via:
     // 1. If RUST_LOG environment variable is set, use that value

@@ -1,6 +1,6 @@
+use clap::Clap;
 use influxdb_iox_client::{connection::Builder, management::*};
 use std::num::NonZeroU32;
-use structopt::StructOpt;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -18,20 +18,20 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Manage IOx writer ID
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clap)]
 pub struct Config {
-    #[structopt(subcommand)]
+    #[clap(subcommand)]
     command: Command,
 }
 
 /// Set writer ID
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clap)]
 struct Set {
     /// The writer ID to set
     id: NonZeroU32,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clap)]
 enum Command {
     Set(Set),
 

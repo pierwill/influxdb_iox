@@ -1,8 +1,8 @@
+use clap::Clap;
 use influxdb_iox_client::{
     connection::Builder,
     management::{generated_types::*, *},
 };
-use structopt::StructOpt;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,31 +23,31 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Manage IOx databases
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clap)]
 pub struct Config {
-    #[structopt(subcommand)]
+    #[clap(subcommand)]
     command: Command,
 }
 
 /// Create a new database
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clap)]
 struct Create {
     /// The name of the database
     name: String,
 
     /// Create a mutable buffer of the specified size in bytes
-    #[structopt(short, long)]
+    #[clap(short, long)]
     mutable_buffer: Option<u64>,
 }
 
 /// Get list of databases, or return configuration of specific database
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clap)]
 struct Get {
     /// If specified returns configuration of database
     name: Option<String>,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Clap)]
 enum Command {
     Create(Create),
     Get(Get),

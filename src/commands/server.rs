@@ -1,9 +1,8 @@
 //! Implementation of command line option for manipulating and showing server
 //! config
 
-use clap::arg_enum;
+use clap::{ArgEnum, Clap};
 use std::{net::SocketAddr, net::ToSocketAddrs, path::PathBuf};
-use structopt::StructOpt;
 
 /// The default bind address for the HTTP API.
 pub const DEFAULT_API_BIND_ADDR: &str = "127.0.0.1:8080";
@@ -15,8 +14,8 @@ pub const DEFAULT_GRPC_BIND_ADDR: &str = "127.0.0.1:8082";
 /// specified.
 pub const FALLBACK_AWS_REGION: &str = "us-east-1";
 
-#[derive(Debug, StructOpt)]
-#[structopt(
+#[derive(Debug, Clap)]
+#[clap(
     name = "server",
     about = "Runs in server mode (default)",
     long_about = "Run the IOx server.\n\nThe configuration options below can be \
@@ -38,14 +37,14 @@ pub struct Config {
     /// `debug,hyper::proto::h1=info` specifies debug logging for all modules
     /// except for the `hyper::proto::h1' module which will only display info
     /// level logging.
-    #[structopt(long = "--log", env = "RUST_LOG")]
+    #[clap(long = "--log", env = "RUST_LOG")]
     pub rust_log: Option<String>,
 
     /// Log message format. Can be one of:
     ///
     /// "rust" (default)
     /// "logfmt" (logfmt/Heroku style - https://brandur.org/logfmt)
-    #[structopt(long = "--log_format", env = "INFLUXDB_IOX_LOG_FORMAT")]
+    #[clap(long = "--log_format", env = "INFLUXDB_IOX_LOG_FORMAT")]
     pub log_format: Option<LogFormat>,
 
     /// This sets logging up with a pre-configured set of convenient log levels.
@@ -55,8 +54,8 @@ pub struct Config {
     /// low level libraries)
     ///
     /// This option is ignored if  --log / RUST_LOG are set
-    #[structopt(
-        short = "-v",
+    #[clap(
+        short = 'v',
         long = "--verbose",
         multiple = true,
         takes_value = false,
@@ -70,11 +69,11 @@ pub struct Config {
     /// replicated writes, WAL segments and Chunks. Must be unique in a group of
     /// connected or semi-connected IOx servers. Must be a number that can be
     /// represented by a 32-bit unsigned integer.
-    #[structopt(long = "--writer-id", env = "INFLUXDB_IOX_ID")]
+    #[clap(long = "--writer-id", env = "INFLUXDB_IOX_ID")]
     pub writer_id: Option<u32>,
 
     /// The address on which IOx will serve HTTP API requests.
-    #[structopt(
+    #[clap(
         long = "--api-bind",
         env = "INFLUXDB_IOX_BIND_ADDR",
         default_value = DEFAULT_API_BIND_ADDR,
@@ -83,7 +82,7 @@ pub struct Config {
     pub http_bind_address: SocketAddr,
 
     /// The address on which IOx will serve Storage gRPC API requests.
-    #[structopt(
+    #[clap(
         long = "--grpc-bind",
         env = "INFLUXDB_IOX_GRPC_BIND_ADDR",
         default_value = DEFAULT_GRPC_BIND_ADDR,
@@ -92,15 +91,16 @@ pub struct Config {
     pub grpc_bind_address: SocketAddr,
 
     /// The location InfluxDB IOx will use to store files locally.
-    #[structopt(long = "--data-dir", env = "INFLUXDB_IOX_DB_DIR")]
+    #[clap(long = "--data-dir", env = "INFLUXDB_IOX_DB_DIR")]
     pub database_directory: Option<PathBuf>,
 
-    #[structopt(
+    #[clap(
         long = "--object-store",
         env = "INFLUXDB_IOX_OBJECT_STORE",
-        possible_values = &ObjectStore::variants(),
+        possible_values = ObjectStore::VARIANTS,
         case_insensitive = true,
-        long_help = r#"Which object storage to use. If not specified, defaults to memory.
+        parse(try_from_str = ObjectStore::from_str_insensitive),
+        long_about = r#"Which object storage to use. If not specified, defaults to memory.
 
 Possible values (case insensitive):
 
@@ -129,7 +129,7 @@ Possible values (case insensitive):
     /// container you've created in the associated storage account, under
     /// Blob Service > Containers. Must also set `--azure-storage-account` and
     /// `--azure-storage-access-key`.
-    #[structopt(long = "--bucket", env = "INFLUXDB_IOX_BUCKET")]
+    #[clap(long = "--bucket", env = "INFLUXDB_IOX_BUCKET")]
     pub bucket: Option<String>,
 
     /// When using Amazon S3 as the object store, set this to an access key that
@@ -141,7 +141,7 @@ Possible values (case insensitive):
     ///
     /// Prefer the environment variable over the command line flag in shared
     /// environments.
-    #[structopt(long = "--aws-access-key-id", env = "AWS_ACCESS_KEY_ID")]
+    #[clap(long = "--aws-access-key-id", env = "AWS_ACCESS_KEY_ID")]
     pub aws_access_key_id: Option<String>,
 
     /// When using Amazon S3 as the object store, set this to the secret access
@@ -152,7 +152,7 @@ Possible values (case insensitive):
     ///
     /// Prefer the environment variable over the command line flag in shared
     /// environments.
-    #[structopt(long = "--aws-secret-access-key", env = "AWS_SECRET_ACCESS_KEY")]
+    #[clap(long = "--aws-secret-access-key", env = "AWS_SECRET_ACCESS_KEY")]
     pub aws_secret_access_key: Option<String>,
 
     /// When using Amazon S3 as the object store, set this to the region
@@ -161,7 +161,7 @@ Possible values (case insensitive):
     ///
     /// Must also set `--object-store=s3`, `--bucket`, `--aws-access-key-id`,
     /// and `--aws-secret-access-key`.
-    #[structopt(
+    #[clap(
         long = "--aws-default-region",
         env = "AWS_DEFAULT_REGION",
         default_value = FALLBACK_AWS_REGION,
@@ -172,7 +172,7 @@ Possible values (case insensitive):
     /// path to the JSON file that contains the Google credentials.
     ///
     /// Must also set `--object-store=google` and `--bucket`.
-    #[structopt(long = "--google-service-account", env = "GOOGLE_SERVICE_ACCOUNT")]
+    #[clap(long = "--google-service-account", env = "GOOGLE_SERVICE_ACCOUNT")]
     pub google_service_account: Option<String>,
 
     /// When using Microsoft Azure as the object store, set this to the
@@ -180,7 +180,7 @@ Possible values (case insensitive):
     ///
     /// Must also set `--object-store=azure`, `--bucket`, and
     /// `--azure-storage-access-key`.
-    #[structopt(long = "--azure-storage-account", env = "AZURE_STORAGE_ACCOUNT")]
+    #[clap(long = "--azure-storage-account", env = "AZURE_STORAGE_ACCOUNT")]
     pub azure_storage_account: Option<String>,
 
     /// When using Microsoft Azure as the object store, set this to one of the
@@ -191,7 +191,7 @@ Possible values (case insensitive):
     ///
     /// Prefer the environment variable over the command line flag in shared
     /// environments.
-    #[structopt(long = "--azure-storage-access-key", env = "AZURE_STORAGE_ACCESS_KEY")]
+    #[clap(long = "--azure-storage-access-key", env = "AZURE_STORAGE_ACCESS_KEY")]
     pub azure_storage_access_key: Option<String>,
 
     /// If set, Jaeger traces are emitted to this host
@@ -207,7 +207,7 @@ Possible values (case insensitive):
     ///
     /// The entire list of variables can be found in
     /// https://github.com/open-telemetry/opentelemetry-specification/blob/master/specification/sdk-environment-variables.md#jaeger-exporter
-    #[structopt(
+    #[clap(
         long = "--oetl_exporter_jaeger_agent",
         env = "OTEL_EXPORTER_JAEGER_AGENT_HOST"
     )]
@@ -228,7 +228,7 @@ pub fn load_config() -> Box<Config> {
     //
 
     //let args = std::env::args().filter(|arg| arg != "server");
-    Box::new(Config::from_iter(strip_server(std::env::args()).iter()))
+    Box::new(Config::parse_from(strip_server(std::env::args()).iter()))
 }
 
 fn parse_socket_addr(s: &str) -> std::io::Result<SocketAddr> {
@@ -259,14 +259,18 @@ fn strip_server(args: impl Iterator<Item = String>) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-arg_enum! {
-    #[derive(Debug, Copy, Clone, PartialEq)]
-    pub enum ObjectStore {
-        Memory,
-        File,
-        S3,
-        Google,
-        Azure,
+#[derive(Debug, Copy, Clone, PartialEq, ArgEnum)]
+pub enum ObjectStore {
+    Memory,
+    File,
+    S3,
+    Google,
+    Azure,
+}
+
+impl ObjectStore {
+    fn from_str_insensitive(s: &str) -> Result<Self, String> {
+        Self::from_str(s, true)
     }
 }
 
@@ -372,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_socketaddr() -> Result<(), clap::Error> {
-        let c = Config::from_iter_safe(strip_server(
+        let c = Config::try_parse_from(strip_server(
             to_vec(&["cmd", "server", "--api-bind", "127.0.0.1:1234"]).into_iter(),
         ))?;
         assert_eq!(
@@ -380,7 +384,7 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 1234))
         );
 
-        let c = Config::from_iter_safe(strip_server(
+        let c = Config::try_parse_from(strip_server(
             to_vec(&["cmd", "server", "--api-bind", "localhost:1234"]).into_iter(),
         ))?;
         // depending on where the test runs, localhost will either resolve to a ipv4 or
@@ -396,7 +400,7 @@ mod tests {
         };
 
         assert_eq!(
-            Config::from_iter_safe(strip_server(
+            Config::try_parse_from(strip_server(
                 to_vec(&["cmd", "server", "--api-bind", "!@INv_a1d(ad0/resp_!"]).into_iter(),
             ))
             .map_err(|e| e.kind)
