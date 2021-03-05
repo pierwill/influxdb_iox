@@ -9,7 +9,7 @@
 
 use std::str::FromStr;
 
-use clap::Clap;
+use clap::{Clap, IntoApp};
 use dotenv::dotenv;
 use tokio::runtime::Runtime;
 use tracing::{debug, error, warn};
@@ -113,6 +113,8 @@ enum Command {
     // Clippy recommended boxing this variant because it's much larger than the others
     Server(Box<commands::server::Config>),
     Writer(commands::writer::Config),
+    /// Print a template .env file to standard out
+    DotenvSkeleton,
 }
 
 fn main() -> Result<(), std::io::Error> {
@@ -193,6 +195,7 @@ fn main() -> Result<(), std::io::Error> {
                     std::process::exit(ReturnCode::Failure as _);
                 }
             }
+            Some(Command::DotenvSkeleton) => dotenv_skeleton(),
             None => {
                 // Note don't set up basic logging here, different logging rules apply in server
                 // mode
@@ -243,6 +246,46 @@ fn get_runtime(num_threads: Option<usize>) -> Result<Runtime, std::io::Error> {
                     .build(),
             }
         }
+    }
+}
+
+fn dotenv_skeleton() {
+    fn one_app(app: &clap::App<'_>) {
+        for arg in app.get_arguments() {
+            if let Some(env) = arg.get_env().and_then(|e| e.to_str()) {
+                if let Some(long_about) = arg.get_long_about() {
+                    for line in long_about.lines() {
+                        println!("# {}", line)
+                    }
+                }
+
+                if let Some(possible_values) = arg.get_possible_values() {
+                    println!("# Possible values: {}", possible_values.join(", "));
+                }
+
+                print!("# {}=", env);
+
+                let default_values: Vec<_> = arg
+                    .get_default_values()
+                    .iter()
+                    .flat_map(|v| v.to_str())
+                    .collect();
+                if !default_values.is_empty() {
+                    print!("{}", default_values.join(","));
+                }
+
+                println!("\n");
+            }
+        }
+    }
+
+    let root_app = Config::into_app();
+    let mut queue = std::collections::VecDeque::from(vec![&root_app]);
+
+    while let Some(app) = queue.pop_front() {
+        one_app(&app);
+
+        queue.extend(app.get_subcommands());
     }
 }
 
