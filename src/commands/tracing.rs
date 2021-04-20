@@ -1,11 +1,17 @@
 //! Log and trace initialization and setup
 
+use observability_deps::tracing::Subscriber;
+use observability_deps::tracing_subscriber::layer::Layered;
+use observability_deps::tracing_subscriber::Layer;
 use observability_deps::{
+    forking_layer::ForkingLayer,
     opentelemetry,
     opentelemetry::sdk::trace,
     opentelemetry::sdk::Resource,
     opentelemetry::KeyValue,
-    opentelemetry_jaeger, opentelemetry_otlp, tracing, tracing_opentelemetry,
+    opentelemetry_jaeger, opentelemetry_otlp,
+    shared_registry::SharedRegistry,
+    tracing, tracing_opentelemetry,
     tracing_subscriber::{self, fmt, layer::SubscriberExt, EnvFilter},
 };
 
@@ -60,61 +66,58 @@ pub fn init_logs_and_tracing(
         log_layer_format_json,
         log_layer_format_logfmt,
     ) = {
-        match traces_layer_otel {
-            Some(_) => (None, None, None, None, None),
-            None => {
-                let log_writer = match config.log_destination {
-                    LogDestination::Stdout => fmt::writer::BoxMakeWriter::new(std::io::stdout),
-                    LogDestination::Stderr => fmt::writer::BoxMakeWriter::new(std::io::stderr),
-                };
-                let (log_format_full, log_format_pretty, log_format_json, log_format_logfmt) =
-                    match config.log_format {
-                        LogFormat::Full => {
-                            (Some(fmt::layer().with_writer(log_writer)), None, None, None)
-                        }
-                        LogFormat::Pretty => (
-                            None,
-                            Some(fmt::layer().pretty().with_writer(log_writer)),
-                            None,
-                            None,
-                        ),
-                        LogFormat::Json => (
-                            None,
-                            None,
-                            Some(fmt::layer().json().with_writer(log_writer)),
-                            None,
-                        ),
-                        LogFormat::Logfmt => {
-                            (None, None, None, Some(logfmt::LogFmtLayer::new(log_writer)))
-                        }
-                    };
+        let log_writer = match config.log_destination {
+            LogDestination::Stdout => fmt::writer::BoxMakeWriter::new(std::io::stdout),
+            LogDestination::Stderr => fmt::writer::BoxMakeWriter::new(std::io::stderr),
+        };
+        let (log_format_full, log_format_pretty, log_format_json, log_format_logfmt) =
+            match config.log_format {
+                LogFormat::Full => (Some(fmt::layer().with_writer(log_writer)), None, None, None),
+                LogFormat::Pretty => (
+                    None,
+                    Some(fmt::layer().pretty().with_writer(log_writer)),
+                    None,
+                    None,
+                ),
+                LogFormat::Json => (
+                    None,
+                    None,
+                    Some(fmt::layer().json().with_writer(log_writer)),
+                    None,
+                ),
+                LogFormat::Logfmt => (None, None, None, Some(logfmt::LogFmtLayer::new(log_writer))),
+            };
 
-                let log_layer_filter = match log_verbose_count {
-                    0 => EnvFilter::try_new(&config.log_filter).unwrap(),
-                    1 => EnvFilter::try_new("info").unwrap(),
-                    2 => EnvFilter::try_new("debug,hyper::proto::h1=info,h2=info").unwrap(),
-                    _ => EnvFilter::try_new("trace,hyper::proto::h1=info,h2=info").unwrap(),
-                };
-                (
-                    Some(log_layer_filter),
-                    log_format_full,
-                    log_format_pretty,
-                    log_format_json,
-                    log_format_logfmt,
-                )
-            }
-        }
+        let log_layer_filter = match log_verbose_count {
+            0 => EnvFilter::try_new(&config.log_filter).unwrap(),
+            1 => EnvFilter::try_new("info").unwrap(),
+            2 => EnvFilter::try_new("debug,hyper::proto::h1=info,h2=info").unwrap(),
+            _ => EnvFilter::try_new("trace,hyper::proto::h1=info,h2=info").unwrap(),
+        };
+        (
+            log_layer_filter,
+            log_format_full,
+            log_format_pretty,
+            log_format_json,
+            log_format_logfmt,
+        )
     };
 
-    let subscriber = tracing_subscriber::Registry::default()
-        .with(log_layer_format_logfmt)
-        .with(log_layer_format_json)
-        .with(log_layer_format_pretty)
-        .with(log_layer_format_full)
-        .with(log_layer_filter)
-        .with(traces_layer_otel)
-        .with(traces_layer_filter);
+    let shared_registry = SharedRegistry::new();
 
+    let log_layer = log_layer_filter
+        .and_then(log_layer_format_full)
+        .and_then(log_layer_format_pretty)
+        .and_then(log_layer_format_json)
+        .and_then(log_layer_format_logfmt)
+        .with_subscriber(shared_registry.clone());
+
+    let traces_layer = Layer::and_then(traces_layer_filter, traces_layer_otel)
+        .with_subscriber(shared_registry.clone());
+
+    let forking_layer = ForkingLayer::new(log_layer, traces_layer);
+    let subscriber = shared_registry.clone().with(forking_layer);
+    // let subscriber = forking_layer.with_subscriber(shared_registry.clone());
     let tracing_guard = tracing::subscriber::set_default(subscriber);
 
     TracingGuard(tracing_guard)

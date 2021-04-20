@@ -2100,6 +2100,7 @@ dependencies = [
  "opentelemetry-prometheus",
  "prometheus",
  "tracing",
+ "tracing-core",
  "tracing-opentelemetry",
  "tracing-subscriber",
 ]
