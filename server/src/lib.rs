@@ -490,19 +490,6 @@ impl<M: ConnectionManager> Server<M> {
         Ok(())
     }
 
-    pub async fn handle_sequenced_entry(
-        &self,
-        db: &Db,
-        sequenced_entry: SequencedEntry,
-    ) -> Result<()> {
-        db.store_sequenced_entry(sequenced_entry)
-            .map_err(|e| Error::UnknownDatabaseError {
-                source: Box::new(e),
-            })?;
-
-        Ok(())
-    }
-
     pub fn db(&self, name: &DatabaseName<'_>) -> Option<Arc<Db>> {
         self.config.db(name)
     }
