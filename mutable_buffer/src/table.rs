@@ -6,11 +6,12 @@ use crate::{
     dictionary::{Dictionary, Error as DictionaryError, DID},
 };
 use data_types::{
+    ClockValue,
     database_rules::WriterId,
     partition_metadata::{ColumnSummary, Statistics},
 };
 use internal_types::{
-    entry::{self, ClockValue},
+    entry,
     schema::{builder::SchemaBuilder, Schema, TIME_COLUMN_NAME},
     selection::Selection,
 };

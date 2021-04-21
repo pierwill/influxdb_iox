@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use data_types::database_rules::ShardConfig;
+use data_types::{database_rules::ShardConfig, ClockValue};
 use internal_types::entry::test_helpers::partitioner;
-use internal_types::entry::{lines_to_sharded_entries, ClockValue, SequencedEntry};
+use internal_types::entry::{lines_to_sharded_entries, SequencedEntry};
 
 static LINES: &str = include_str!("../../tests/fixtures/lineproto/prometheus.lp");
 

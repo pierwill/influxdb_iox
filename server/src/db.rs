@@ -27,6 +27,7 @@ use arrow_deps::{
 use catalog::{chunk::ChunkState, Catalog};
 pub(crate) use chunk::DbChunk;
 use data_types::{
+    ClockValue,
     chunk::ChunkSummary, database_rules::DatabaseRules, partition_metadata::PartitionSummary,
     timestamp::TimestampRange,
 };
@@ -37,11 +38,14 @@ use query::{exec::Executor, Database, DEFAULT_SCHEMA};
 use read_buffer::Chunk as ReadBufferChunk;
 use tracker::{MemRegistry, TaskTracker, TrackedFutureExt};
 
-use super::{buffer::Buffer, JobRegistry};
+use super::{
+    buffer::{self, Buffer},
+    JobRegistry,
+};
 use data_types::job::Job;
 
 use data_types::partition_metadata::TableSummary;
-use internal_types::entry::{self, ClockValue, Entry, SequencedEntry};
+use internal_types::entry::{self, Entry, SequencedEntry};
 use lifecycle::LifecycleManager;
 use system_tables::{SystemSchemaProvider, SYSTEM_SCHEMA};
 
@@ -155,6 +159,9 @@ pub enum Error {
 
     #[snafu(display("Error building sequenced entry: {}", source))]
     SequencedEntryError { source: entry::Error },
+
+    #[snafu(display("Error adding sequenced entry to Write Buffer: {}", source))]
+    WriteBufferError { source: buffer::Error },
 
     #[snafu(display("Error building sequenced entry: {}", source))]
     SchemaConversion {
@@ -283,7 +290,7 @@ impl MemoryRegistries {
 impl Db {
     pub fn new(
         rules: DatabaseRules,
-        server_id: NonZeroU32,
+        writer_id: WriterId,
         object_store: Arc<ObjectStore>,
         exec: Arc<Executor>,
         write_buffer: Option<Buffer>,
@@ -722,21 +729,27 @@ impl Db {
     /// entry is then written into the mutable buffer.
     pub fn store_entry(&self, entry: Entry) -> Result<()> {
         // TODO: build this based on either this or on the write buffer, if configured
-        let sequenced_entry = SequencedEntry::new_from_entry_bytes(
-            ClockValue::new(self.next_sequence()),
-            self.server_id.get(),
-            entry.data(),
-        )
-        .context(SequencedEntryError)?;
+        // ^^ I don't know what this comment means, is it still relevant?
+        let sequenced_entry = Arc::new(
+            SequencedEntry::new_from_entry_bytes(
+                ClockValue::new(self.next_sequence()),
+                self.server_id.get(),
+                entry.data(),
+            )
+            .context(SequencedEntryError)?,
+        );
 
-        if self.rules.read().write_buffer_config.is_some() {
-            todo!("route to the Write Buffer. TODO: carols10cents #1157")
+        if let Some(write_buffer) = &self.write_buffer {
+            let mut wb = write_buffer.lock();
+            wb.append_and_replicate(Arc::clone(&sequenced_entry))
+                .context(WriteBufferError)?;
         }
 
+        // Mutable buffer writing
         self.store_sequenced_entry(sequenced_entry)
     }
 
-    pub fn store_sequenced_entry(&self, sequenced_entry: SequencedEntry) -> Result<()> {
+    pub fn store_sequenced_entry(&self, sequenced_entry: Arc<SequencedEntry>) -> Result<()> {
         let rules = self.rules.read();
         let mutable_size_threshold = rules.lifecycle_rules.mutable_size_threshold;
         if rules.lifecycle_rules.immutable {

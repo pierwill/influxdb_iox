@@ -285,16 +285,20 @@ impl<M: ConnectionManager> Server<M> {
         self.id.get().context(IdNotSet)
     }
 
+    pub fn writer_id(&self) -> Result<WriterId> {
+        self.require_id().map(|id| id.get())
+    }
+
     /// Tells the server the set of rules for a database.
-    pub async fn create_database(&self, rules: DatabaseRules, server_id: NonZeroU32) -> Result<()> {
+    pub async fn create_database(&self, rules: DatabaseRules) -> Result<()> {
         // Return an error if this server hasn't yet been setup with an id
-        self.require_id()?;
+        let writer_id = self.writer_id()?;
         let db_reservation = self.config.create_db(rules)?;
 
         self.persist_database_rules(db_reservation.rules().clone())
             .await?;
 
-        db_reservation.commit(server_id, Arc::clone(&self.store), Arc::clone(&self.exec));
+        db_reservation.commit(writer_id, Arc::clone(&self.store), Arc::clone(&self.exec));
 
         Ok(())
     }
@@ -654,7 +658,7 @@ where
         let db = match self.db(&db_name) {
             Some(db) => db,
             None => {
-                self.create_database(DatabaseRules::new(db_name.clone()), self.require_id()?)
+                self.create_database(DatabaseRules::new(db_name.clone()))
                     .await?;
                 self.db(&db_name).expect("db not inserted")
             }
@@ -818,7 +822,7 @@ mod tests {
 
         // Create a database
         server
-            .create_database(rules.clone(), server.require_id().unwrap())
+            .create_database(rules.clone())
             .await
             .expect("failed to create database");
 
@@ -845,7 +849,6 @@ mod tests {
         server
             .create_database(
                 DatabaseRules::new(db2.clone()),
-                server.require_id().unwrap(),
             )
             .await
             .expect("failed to create 2nd db");
@@ -876,7 +879,6 @@ mod tests {
         server
             .create_database(
                 DatabaseRules::new(name.clone()),
-                server.require_id().unwrap(),
             )
             .await
             .expect("failed to create database");
@@ -885,7 +887,6 @@ mod tests {
         let got = server
             .create_database(
                 DatabaseRules::new(name.clone()),
-                server.require_id().unwrap(),
             )
             .await
             .unwrap_err();
@@ -906,7 +907,7 @@ mod tests {
         for name in &names {
             let name = DatabaseName::new(name.to_string()).unwrap();
             server
-                .create_database(DatabaseRules::new(name), server.require_id().unwrap())
+                .create_database(DatabaseRules::new(name))
                 .await
                 .expect("failed to create database");
         }
@@ -923,7 +924,7 @@ mod tests {
 
         let name = DatabaseName::new("foo".to_string()).unwrap();
         server
-            .create_database(DatabaseRules::new(name), server.require_id().unwrap())
+            .create_database(DatabaseRules::new(name))
             .await
             .unwrap();
 
@@ -959,7 +960,7 @@ mod tests {
 
         let name = DatabaseName::new("foo".to_string()).unwrap();
         server
-            .create_database(DatabaseRules::new(name), server.require_id().unwrap())
+            .create_database(DatabaseRules::new(name))
             .await
             .unwrap();
 
@@ -1009,7 +1010,6 @@ mod tests {
         server
             .create_database(
                 DatabaseRules::new(db_name.clone()),
-                server.require_id().unwrap(),
             )
             .await
             .unwrap();
@@ -1148,7 +1148,7 @@ mod tests {
 
         let name = DatabaseName::new("foo".to_string()).unwrap();
         server
-            .create_database(DatabaseRules::new(name), server.require_id().unwrap())
+            .create_database(DatabaseRules::new(name))
             .await
             .unwrap();
 

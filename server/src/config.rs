@@ -12,7 +12,7 @@ use object_store::{path::ObjectStorePath, ObjectStore};
 use query::exec::Executor;
 
 /// This module contains code for managing the configuration of the server.
-use crate::{db::Db, Error, JobRegistry, Result};
+use crate::{buffer::Buffer, db::Db, Error, JobRegistry, Result};
 use observability_deps::tracing::{self, error, info, warn, Instrument};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -118,7 +118,7 @@ impl Config {
     fn commit(
         &self,
         rules: DatabaseRules,
-        server_id: NonZeroU32,
+        writer_id: WriterId,
         object_store: Arc<ObjectStore>,
         exec: Arc<Executor>,
     ) {
@@ -133,7 +133,10 @@ impl Config {
             return;
         }
 
-        let write_buffer = rules.write_buffer_config.as_ref().map(Into::into);
+        let write_buffer = rules
+            .write_buffer_config
+            .as_ref()
+            .map(|config| Buffer::new_with_config(writer_id, config));
         let db = Arc::new(Db::new(
             rules,
             server_id,

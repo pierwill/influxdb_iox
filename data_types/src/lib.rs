@@ -10,18 +10,19 @@
     clippy::clone_on_ref_ptr
 )]
 
-pub use database_name::*;
 
 pub mod chunk;
+mod clock_value;
+pub use clock_value::*;
+pub mod consistent_hasher;
+mod database_name;
+pub use database_name::*;
 pub mod database_rules;
 pub mod error;
+pub mod field_validation;
 pub mod http;
 pub mod job;
 pub mod names;
 pub mod partition_metadata;
 pub mod timestamp;
 pub mod write_buffer;
-
-pub mod consistent_hasher;
-mod database_name;
-pub mod field_validation;

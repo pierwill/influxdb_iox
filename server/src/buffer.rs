@@ -2,10 +2,14 @@
 
 use data_types::{
     database_rules::{WriteBufferRollover, WriterId},
+    ClockValue,
     DatabaseName,
 };
 use generated_types::wb;
-use internal_types::data::ReplicatedWrite;
+use internal_types::{
+    data::ReplicatedWrite,
+    entry::SequencedEntry,
+};
 use object_store::{path::ObjectStorePath, ObjectStore, ObjectStoreApi};
 
 use std::{
@@ -16,10 +20,10 @@ use std::{
 };
 
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use crc32fast::Hasher;
 use data_types::database_rules::WriteBufferConfig;
-use data_types::write_buffer::{SegmentPersistence, SegmentSummary, WriterSummary};
+use data_types::write_buffer::{SegmentPersistence, SegmentSummary, WriterSequence};
 use observability_deps::tracing::{error, info, warn};
 use parking_lot::Mutex;
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
@@ -87,6 +91,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// which can be persisted to object storage.
 #[derive(Debug)]
 pub struct Buffer {
+    writer_id: WriterId,
     max_size: u64,
     current_size: u64,
     segment_size: u64,
@@ -98,28 +103,52 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn new(
+        writer_id: WriterId,
         max_size: u64,
         segment_size: u64,
         rollover_behavior: WriteBufferRollover,
         persist: bool,
     ) -> Self {
         Self {
+            writer_id,
             max_size,
             segment_size,
             persist,
             rollover_behavior,
-            open_segment: Segment::new(1),
+            open_segment: Segment::new(1, writer_id),
             current_size: 0,
             closed_segments: vec![],
         }
     }
 
-    /// Appends a replicated write onto the buffer, returning the segment if it
+    pub fn new_with_config(writer_id: WriterId, config: &WriteBufferConfig) -> Self {
+        Self::new(
+            writer_id,
+            config.buffer_size,
+            config.segment_size,
+            config.buffer_rollover,
+            config.store_segments,
+        )
+    }
+
+    pub fn append_and_replicate(&mut self, write: Arc<SequencedEntry>) -> Result<()> {
+        // append to segment
+        self.append(Arc::clone(&write))?;
+
+        // TODO: replicate
+
+        Ok(())
+    }
+
+    /// Appends a write onto the buffer, returning the segment if it
     /// has been closed out. If the max size of the buffer would be exceeded
     /// by accepting the write, the oldest (first) of the closed segments
     /// will be dropped, if it is persisted. Otherwise, an error is returned.
-    pub fn append(&mut self, write: Arc<ReplicatedWrite>) -> Result<Option<Arc<Segment>>> {
-        let write_size = u64::try_from(write.data().len())
+    pub fn append(
+        &mut self,
+        write: Arc<SequencedEntry>,
+    ) -> Result<Option<Arc<Segment>>> {
+        let write_size = u64::try_from(write.size())
             .expect("appended data must be less than a u64 in length");
 
         while self.current_size + write_size > self.max_size {
@@ -165,7 +194,10 @@ impl Buffer {
         self.open_segment.append(write)?;
         if self.open_segment.size > self.segment_size {
             let next_id = self.open_segment.id + 1;
-            let segment = mem::replace(&mut self.open_segment, Segment::new(next_id));
+            let segment = mem::replace(
+                &mut self.open_segment,
+                Segment::new(next_id, self.writer_id),
+            );
             let segment = Arc::new(segment);
 
             self.closed_segments.push(Arc::clone(&segment));
@@ -185,26 +217,29 @@ impl Buffer {
     /// given writer ID and sequence are to identify from what point to
     /// replay writes. If no write matches the given writer ID and sequence
     /// number, all replicated writes within the buffer will be returned.
-    pub fn all_writes_since(&self, since: WriterSequence) -> Vec<Arc<ReplicatedWrite>> {
+    pub fn all_writes_since(&self, since: WriterSequence) -> Vec<Arc<SequencedEntry>> {
         let mut writes = Vec::new();
 
         // start with the newest writes and go back. Hopefully they're asking for
         // something recent.
-        for w in self.open_segment.writes.iter().rev() {
-            if w.equal_to_writer_and_sequence(since.id, since.sequence) {
+        for (&writer_sequence, sequenced_entry) in self.open_segment.sequenced_entries.iter().rev()
+        {
+            if since <= writer_sequence {
                 writes.reverse();
                 return writes;
             }
-            writes.push(Arc::clone(&w));
+
+            writes.push(Arc::clone(&sequenced_entry));
         }
 
         for s in self.closed_segments.iter().rev() {
-            for w in s.writes.iter().rev() {
-                if w.equal_to_writer_and_sequence(since.id, since.sequence) {
+            for (&writer_sequence, sequenced_entry) in s.sequenced_entries.iter().rev() {
+                if since <= writer_sequence {
                     writes.reverse();
                     return writes;
                 }
-                writes.push(Arc::clone(&w));
+
+                writes.push(Arc::clone(&sequenced_entry));
             }
         }
 
@@ -216,31 +251,30 @@ impl Buffer {
     /// onward. This returns only writes from the passed in writer ID. If no
     /// write matches the given writer ID and sequence number, all
     /// replicated writes within the buffer for that writer will be returned.
-    pub fn writes_since(&self, since: WriterSequence) -> Vec<Arc<ReplicatedWrite>> {
+    pub fn writes_since(&self, since: WriterSequence) -> Vec<Arc<SequencedEntry>> {
         let mut writes = Vec::new();
 
         // start with the newest writes and go back. Hopefully they're asking for
         // something recent.
-        for w in self.open_segment.writes.iter().rev() {
-            let (writer, sequence) = w.writer_and_sequence();
-            if writer == since.id {
-                if sequence == since.sequence {
+        for (&writer_sequence, sequenced_entry) in self.open_segment.sequenced_entries.iter().rev()
+        {
+            if writer_sequence.writer_id == since.writer_id {
+                if writer_sequence.clock_value <= since.clock_value {
                     writes.reverse();
                     return writes;
                 }
-                writes.push(Arc::clone(&w));
+                writes.push(Arc::clone(sequenced_entry));
             }
         }
 
         for s in self.closed_segments.iter().rev() {
-            for w in s.writes.iter().rev() {
-                let (writer, sequence) = w.writer_and_sequence();
-                if writer == since.id {
-                    if sequence == since.sequence {
+            for (&writer_sequence, sequenced_entry) in s.sequenced_entries.iter().rev() {
+                if writer_sequence.writer_id == since.writer_id {
+                    if writer_sequence.clock_value <= since.clock_value {
                         writes.reverse();
                         return writes;
                     }
-                    writes.push(Arc::clone(&w));
+                    writes.push(Arc::clone(sequenced_entry));
                 }
             }
         }
@@ -265,102 +299,53 @@ impl Buffer {
     }
 }
 
-impl From<&WriteBufferConfig> for Buffer {
-    fn from(config: &WriteBufferConfig) -> Self {
-        Self::new(
-            config.buffer_size,
-            config.segment_size,
-            config.buffer_rollover,
-            config.store_segments,
-        )
-    }
-}
-
-/// Segment is a collection of replicated writes that can be persisted to
+/// Segment is a collection of sequenced entries that can be persisted to
 /// object store.
 #[derive(Debug)]
 pub struct Segment {
-    pub(crate) id: u64,
+    // Do we still want to have a segment ID? Useful for debugging?
+    id: u64,
     size: u64,
-    pub writes: Vec<Arc<ReplicatedWrite>>,
-    writers: BTreeMap<WriterId, WriterSummary>,
-    // Time this segment was initialized
-    created_at: DateTime<Utc>,
+    sequenced_entries: BTreeMap<WriterSequence, Arc<SequencedEntry>>,
+    writer_id: WriterId,
+    consistency_high_water: ClockValue,
     // Persistence metadata if segment is persisted
     persisted: Mutex<Option<SegmentPersistence>>,
 }
 
 impl Segment {
-    fn new(id: u64) -> Self {
+    fn new(id: u64, writer_id: WriterId) -> Self {
         Self {
             id,
             size: 0,
-            writes: vec![],
-            writers: BTreeMap::new(),
-            created_at: Utc::now(),
+            sequenced_entries: BTreeMap::new(),
+            writer_id,
+            consistency_high_water: ClockValue::default(),
             persisted: Mutex::new(None),
         }
     }
 
-    fn new_with_capacity(id: u64, capacity: usize) -> Self {
-        Self {
-            id,
-            size: 0,
-            writes: Vec::with_capacity(capacity),
-            writers: BTreeMap::new(),
-            created_at: Utc::now(),
-            persisted: Mutex::new(None),
-        }
+    fn min_clock_value(&self) -> ClockValue {
+        self.sequenced_entries.iter().next().map(|(k, _v)| k.clock_value).unwrap_or_default()
+    }
+
+    fn max_clock_value(&self) -> ClockValue {
+        self.sequenced_entries.iter().rev().next().map(|(k, _v)| k.clock_value).unwrap_or_default()
     }
 
     // appends the write to the segment, keeping track of the summary information
     // about the writer
-    fn append(&mut self, write: Arc<ReplicatedWrite>) -> Result<()> {
-        let (writer_id, sequence_number) = write.writer_and_sequence();
-        self.validate_and_update_sequence_summary(writer_id, sequence_number)?;
+    fn append(&mut self, write: Arc<SequencedEntry>) -> Result<()> {
+        let writer_sequence = WriterSequence {
+            clock_value: write.clock_value(),
+            writer_id: write.writer_id(),
+        };
 
-        let size = write.data().len();
+        let size = write.size();
         let size = u64::try_from(size).expect("appended data must be less than a u64 in length");
         self.size += size;
 
-        self.writes.push(write);
-        Ok(())
-    }
-
-    // checks that the sequence numbers in this segment are monotonically
-    // increasing. Also keeps track of the starting and ending sequence numbers
-    // and if any were missing.
-    fn validate_and_update_sequence_summary(
-        &mut self,
-        writer_id: WriterId,
-        sequence_number: u64,
-    ) -> Result<()> {
-        match self.writers.get_mut(&writer_id) {
-            Some(summary) => {
-                if summary.end_sequence >= sequence_number {
-                    return SequenceOutOfOrder {
-                        writer: writer_id,
-                        current_sequence: summary.end_sequence,
-                        incoming_sequence: sequence_number,
-                    }
-                    .fail();
-                } else if summary.end_sequence + 1 != sequence_number {
-                    summary.missing_sequence = true;
-                }
-
-                summary.end_sequence = sequence_number;
-            }
-            None => {
-                let summary = WriterSummary {
-                    start_sequence: sequence_number,
-                    end_sequence: sequence_number,
-                    missing_sequence: false,
-                };
-
-                self.writers.insert(writer_id, summary);
-            }
-        }
-
+        self.sequenced_entries.insert(writer_sequence, write);
         Ok(())
     }
 
@@ -375,83 +360,83 @@ impl Segment {
         self.persisted.lock().clone()
     }
 
-    /// Spawns a tokio task that will continuously try to persist the bytes to
-    /// the given object store location.
-    pub fn persist_bytes_in_background(
-        &self,
-        tracker: TaskRegistration,
-        writer_id: u32,
-        db_name: &DatabaseName<'_>,
-        store: Arc<ObjectStore>,
-    ) -> Result<()> {
-        let data = self.to_file_bytes(writer_id)?;
-        let location = database_object_store_path(writer_id, db_name, &store);
-        let location = object_store_path_for_segment(&location, self.id)?;
+    // /// Spawns a tokio task that will continuously try to persist the bytes to
+    // /// the given object store location.
+    // pub fn persist_bytes_in_background(
+    //     &self,
+    //     tracker: TaskRegistration,
+    //     writer_id: u32,
+    //     db_name: &DatabaseName<'_>,
+    //     store: Arc<ObjectStore>,
+    // ) -> Result<()> {
+    //     let data = self.to_file_bytes(writer_id)?;
+    //     let location = database_object_store_path(writer_id, db_name, &store);
+    //     let location = object_store_path_for_segment(&location, self.id)?;
+    //
+    //     let len = data.len();
+    //     let mut stream_data = std::io::Result::Ok(data.clone());
+    //
+    //     tokio::task::spawn(
+    //         async move {
+    //             while let Err(err) = store
+    //                 .put(
+    //                     &location,
+    //                     futures::stream::once(async move { stream_data }),
+    //                     Some(len),
+    //                 )
+    //                 .await
+    //             {
+    //                 error!("error writing bytes to store: {}", err);
+    //                 tokio::time::sleep(tokio::time::Duration::from_secs(
+    //                     super::STORE_ERROR_PAUSE_SECONDS,
+    //                 ))
+    //                 .await;
+    //                 stream_data = std::io::Result::Ok(data.clone());
+    //             }
+    //
+    //             // TODO: Mark segment as persisted
+    //             info!("persisted data to {}", location.display());
+    //         }
+    //         .track(tracker),
+    //     );
+    //
+    //     Ok(())
+    // }
 
-        let len = data.len();
-        let mut stream_data = std::io::Result::Ok(data.clone());
-
-        tokio::task::spawn(
-            async move {
-                while let Err(err) = store
-                    .put(
-                        &location,
-                        futures::stream::once(async move { stream_data }),
-                        Some(len),
-                    )
-                    .await
-                {
-                    error!("error writing bytes to store: {}", err);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(
-                        super::STORE_ERROR_PAUSE_SECONDS,
-                    ))
-                    .await;
-                    stream_data = std::io::Result::Ok(data.clone());
-                }
-
-                // TODO: Mark segment as persisted
-                info!("persisted data to {}", location.display());
-            }
-            .track(tracker),
-        );
-
-        Ok(())
-    }
-
-    /// converts the segment to its flatbuffer bytes
-    fn fb_bytes(&self, writer_id: u32) -> Vec<u8> {
-        let mut fbb = flatbuffers::FlatBufferBuilder::new_with_capacity(
-            usize::try_from(self.size).expect("unable to serialize segment of this size"),
-        );
-        let writes = self
-            .writes
-            .iter()
-            .map(|rw| {
-                let payload = fbb.create_vector_direct(rw.data());
-                wb::ReplicatedWriteData::create(
-                    &mut fbb,
-                    &wb::ReplicatedWriteDataArgs {
-                        payload: Some(payload),
-                    },
-                )
-            })
-            .collect::<Vec<flatbuffers::WIPOffset<wb::ReplicatedWriteData<'_>>>>();
-        let writes = fbb.create_vector(&writes);
-
-        let segment = wb::Segment::create(
-            &mut fbb,
-            &wb::SegmentArgs {
-                id: self.id,
-                writer_id,
-                writes: Some(writes),
-            },
-        );
-
-        fbb.finish(segment, None);
-
-        let (mut data, idx) = fbb.collapse();
-        data.split_off(idx)
-    }
+    // /// converts the segment to its flatbuffer bytes
+    // fn fb_bytes(&self, writer_id: u32) -> Vec<u8> {
+    //     let mut fbb = flatbuffers::FlatBufferBuilder::new_with_capacity(
+    //         usize::try_from(self.size).expect("unable to serialize segment of this size"),
+    //     );
+    //     let writes = self
+    //         .writes
+    //         .iter()
+    //         .map(|rw| {
+    //             let payload = fbb.create_vector_direct(rw.data());
+    //             wb::ReplicatedWriteData::create(
+    //                 &mut fbb,
+    //                 &wb::ReplicatedWriteDataArgs {
+    //                     payload: Some(payload),
+    //                 },
+    //             )
+    //         })
+    //         .collect::<Vec<flatbuffers::WIPOffset<wb::ReplicatedWriteData<'_>>>>();
+    //     let writes = fbb.create_vector(&writes);
+    //
+    //     let segment = wb::Segment::create(
+    //         &mut fbb,
+    //         &wb::SegmentArgs {
+    //             id: self.id,
+    //             writer_id,
+    //             writes: Some(writes),
+    //         },
+    //     );
+    //
+    //     fbb.finish(segment, None);
+    //
+    //     let (mut data, idx) = fbb.collapse();
+    //     data.split_off(idx)
+    // }
 
     /// returns a summary of the data stored within this segment
     pub fn summary(&self) -> SegmentSummary {
@@ -459,83 +444,76 @@ impl Segment {
 
         SegmentSummary {
             size: self.size,
-            created_at: self.created_at,
             persisted,
-            writers: self.writers.clone(),
+            sequenced_entries: self.sequenced_entries.keys().cloned().collect(),
         }
     }
 
-    /// serialize the segment to the bytes to represent it in a file. This
-    /// compresses the flatbuffers payload and writes a crc32 checksum at
-    /// the end.
-    pub fn to_file_bytes(&self, writer_id: u32) -> Result<Bytes> {
-        let fb_bytes = self.fb_bytes(writer_id);
+    // /// serialize the segment to the bytes to represent it in a file. This
+    // /// compresses the flatbuffers payload and writes a crc32 checksum at
+    // /// the end.
+    // pub fn to_file_bytes(&self, writer_id: u32) -> Result<Bytes> {
+    //     let fb_bytes = self.fb_bytes(writer_id);
+    //
+    //     let mut encoder = snap::raw::Encoder::new();
+    //     let mut compressed_data =
+    //         encoder
+    //             .compress_vec(&fb_bytes)
+    //             .context(UnableToCompressData {
+    //                 segment_id: self.id,
+    //             })?;
+    //
+    //     let mut hasher = Hasher::new();
+    //     hasher.update(&compressed_data);
+    //     let checksum = hasher.finalize();
+    //
+    //     compressed_data.extend_from_slice(&checksum.to_le_bytes());
+    //
+    //     Ok(Bytes::from(compressed_data))
+    // }
 
-        let mut encoder = snap::raw::Encoder::new();
-        let mut compressed_data =
-            encoder
-                .compress_vec(&fb_bytes)
-                .context(UnableToCompressData {
-                    segment_id: self.id,
-                })?;
-
-        let mut hasher = Hasher::new();
-        hasher.update(&compressed_data);
-        let checksum = hasher.finalize();
-
-        compressed_data.extend_from_slice(&checksum.to_le_bytes());
-
-        Ok(Bytes::from(compressed_data))
-    }
-
-    /// checks the crc32 for the compressed data, decompresses it and
-    /// deserializes it into a Segment struct.
-    pub fn from_file_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() < std::mem::size_of::<u32>() {
-            return FlatbuffersSegmentTooSmall { bytes: data.len() }.fail();
-        }
-
-        let (data, checksum) = data.split_at(data.len() - std::mem::size_of::<u32>());
-        let checksum = u32::from_le_bytes(checksum.try_into().context(UnableToReadChecksum)?);
-
-        let mut hasher = Hasher::new();
-        hasher.update(&data);
-
-        if checksum != hasher.finalize() {
-            return Err(Error::ChecksumMismatch);
-        }
-
-        let mut decoder = snap::raw::Decoder::new();
-        let data = decoder
-            .decompress_vec(data)
-            .context(UnableToDecompressData)?;
-
-        // Use verified flatbuffer functionality here
-        let fb_segment =
-            flatbuffers::root::<wb::Segment<'_>>(&data).context(InvalidFlatbuffersSegment)?;
-
-        let writes = fb_segment
-            .writes()
-            .context(FlatbuffersMissingField { field: "writes" })?;
-        let mut segment = Self::new_with_capacity(fb_segment.id(), writes.len());
-        for w in writes {
-            let data = w
-                .payload()
-                .context(FlatbuffersMissingField { field: "payload" })?
-                .to_vec();
-            let rw = ReplicatedWrite::try_from(data).context(InvalidFlatbuffersSegment)?;
-
-            segment.append(Arc::new(rw))?;
-        }
-
-        Ok(segment)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct WriterSequence {
-    pub id: WriterId,
-    pub sequence: u64,
+    // /// checks the crc32 for the compressed data, decompresses it and
+    // /// deserializes it into a Segment struct.
+    // pub fn from_file_bytes(data: &[u8]) -> Result<Self> {
+    //     if data.len() < std::mem::size_of::<u32>() {
+    //         return FlatbuffersSegmentTooSmall { bytes: data.len() }.fail();
+    //     }
+    //
+    //     let (data, checksum) = data.split_at(data.len() - std::mem::size_of::<u32>());
+    //     let checksum = u32::from_le_bytes(checksum.try_into().context(UnableToReadChecksum)?);
+    //
+    //     let mut hasher = Hasher::new();
+    //     hasher.update(&data);
+    //
+    //     if checksum != hasher.finalize() {
+    //         return Err(Error::ChecksumMismatch);
+    //     }
+    //
+    //     let mut decoder = snap::raw::Decoder::new();
+    //     let data = decoder
+    //         .decompress_vec(data)
+    //         .context(UnableToDecompressData)?;
+    //
+    //     // Use verified flatbuffer functionality here
+    //     let fb_segment =
+    //         flatbuffers::root::<wb::Segment<'_>>(&data).context(InvalidFlatbuffersSegment)?;
+    //
+    //     let writes = fb_segment
+    //         .writes()
+    //         .context(FlatbuffersMissingField { field: "writes" })?;
+    //     let mut segment = Self::new_with_capacity(fb_segment.id(), writes.len());
+    //     for w in writes {
+    //         let data = w
+    //             .payload()
+    //             .context(FlatbuffersMissingField { field: "payload" })?
+    //             .to_vec();
+    //         let rw = ReplicatedWrite::try_from(data).context(InvalidFlatbuffersSegment)?;
+    //
+    //         segment.append(Arc::new(rw))?;
+    //     }
+    //
+    //     Ok(segment)
+    // }
 }
 
 const WRITE_BUFFER_DIR: &str = "wb";
@@ -591,7 +569,7 @@ mod tests {
     fn append_increments_current_size_and_uses_existing_segment() {
         let max = 1 << 32;
         let segment = 1 << 16;
-        let mut buf = Buffer::new(max, segment, WriteBufferRollover::ReturnError, false);
+        let mut buf = Buffer::new(1, max, segment, WriteBufferRollover::ReturnError, false);
         let write = lp_to_replicated_write(1, 1, "cpu val=1 10");
 
         let size = write.data().len() as u64;
@@ -610,7 +588,7 @@ mod tests {
     fn append_rolls_over_segment() {
         let max = 1 << 16;
         let segment = 1;
-        let mut buf = Buffer::new(max, segment, WriteBufferRollover::ReturnError, false);
+        let mut buf = Buffer::new(1, max, segment, WriteBufferRollover::ReturnError, false);
         let write = lp_to_replicated_write(1, 1, "cpu val=1 10");
 
         let segment = buf.append(write).unwrap();
@@ -628,7 +606,7 @@ mod tests {
     fn drops_persisted_segment_when_over_size() {
         let max = 600;
         let segment = 1;
-        let mut buf = Buffer::new(max, segment, WriteBufferRollover::ReturnError, false);
+        let mut buf = Buffer::new(1, max, segment, WriteBufferRollover::ReturnError, false);
 
         let write = lp_to_replicated_write(1, 1, "cpu val=1 10");
         let segment = buf.append(write).unwrap().unwrap();
@@ -663,7 +641,7 @@ mod tests {
     fn drops_old_segment_even_if_not_persisted() {
         let max = 600;
         let segment = 1;
-        let mut buf = Buffer::new(max, segment, WriteBufferRollover::DropOldSegment, false);
+        let mut buf = Buffer::new(1, max, segment, WriteBufferRollover::DropOldSegment, false);
 
         let write = lp_to_replicated_write(1, 1, "cpu val=1 10");
         let segment = buf.append(write).unwrap().unwrap();
@@ -692,7 +670,7 @@ mod tests {
     fn drops_incoming_write_if_oldest_segment_not_persisted() {
         let max = 600;
         let segment = 1;
-        let mut buf = Buffer::new(max, segment, WriteBufferRollover::DropIncoming, false);
+        let mut buf = Buffer::new(1, max, segment, WriteBufferRollover::DropIncoming, false);
 
         let write = lp_to_replicated_write(1, 1, "cpu val=1 10");
         let segment = buf.append(write).unwrap().unwrap();
@@ -720,7 +698,7 @@ mod tests {
     fn returns_error_if_oldest_segment_not_persisted() {
         let max = 600;
         let segment = 1;
-        let mut buf = Buffer::new(max, segment, WriteBufferRollover::ReturnError, false);
+        let mut buf = Buffer::new(1, max, segment, WriteBufferRollover::ReturnError, false);
 
         let write = lp_to_replicated_write(1, 1, "cpu val=1 10");
         let segment = buf.append(write).unwrap().unwrap();
@@ -748,7 +726,7 @@ mod tests {
         let max = 1 << 63;
         let write = lp_to_replicated_write(1, 1, "cpu val=1 10");
         let segment = (write.data().len() + 1) as u64;
-        let mut buf = Buffer::new(max, segment, WriteBufferRollover::ReturnError, false);
+        let mut buf = Buffer::new(1, max, segment, WriteBufferRollover::ReturnError, false);
 
         let segment = buf.append(write).unwrap();
         assert!(segment.is_none());
@@ -805,7 +783,7 @@ mod tests {
         let max = 1 << 63;
         let write = lp_to_replicated_write(1, 1, "cpu val=1 10");
         let segment = (write.data().len() + 1) as u64;
-        let mut buf = Buffer::new(max, segment, WriteBufferRollover::ReturnError, false);
+        let mut buf = Buffer::new(1, max, segment, WriteBufferRollover::ReturnError, false);
 
         let segment = buf.append(write).unwrap();
         assert!(segment.is_none());
@@ -852,7 +830,7 @@ mod tests {
         let max = 1 << 63;
         let write = lp_to_replicated_write(1, 3, "cpu val=1 10");
         let segment = (write.data().len() + 1) as u64;
-        let mut buf = Buffer::new(max, segment, WriteBufferRollover::ReturnError, false);
+        let mut buf = Buffer::new(1, max, segment, WriteBufferRollover::ReturnError, false);
 
         let segment = buf.append(write).unwrap();
         assert!(segment.is_none());
@@ -874,24 +852,12 @@ mod tests {
         segment.append(write).unwrap();
 
         let summary = segment.writers.get(&1).unwrap();
-        assert_eq!(
-            &WriterSummary {
-                start_sequence: 1,
-                end_sequence: 2,
-                missing_sequence: false,
-            },
-            summary
-        );
+        assert_eq!(summary.min_clock_value(), 1);
+        assert_eq!(summary.max_clock_value(), 2);
 
         let summary = segment.writers.get(&2).unwrap();
-        assert_eq!(
-            &WriterSummary {
-                start_sequence: 1,
-                end_sequence: 4,
-                missing_sequence: true,
-            },
-            summary
-        );
+        assert_eq!(summary.min_clock_value(), 1);
+        assert_eq!(summary.max_clock_value(), 4);
     }
 
     #[test]

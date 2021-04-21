@@ -2,7 +2,10 @@
 //! from line protocol and the `DatabaseRules` configuration.
 
 use crate::schema::TIME_COLUMN_NAME;
-use data_types::database_rules::{Error as DataError, Partitioner, ShardId, Sharder, WriterId};
+use data_types::{
+    database_rules::{Error as DataError, Partitioner, ShardId, Sharder, WriterId},
+    ClockValue,
+};
 use generated_types::entry as entry_fb;
 use influxdb_line_protocol::{FieldValue, ParsedLine};
 
@@ -1120,19 +1123,6 @@ enum ColumnRaw<'a> {
     Bool(Vec<bool>),
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Copy, Clone)]
-pub struct ClockValue(u64);
-
-impl ClockValue {
-    pub fn get(&self) -> u64 {
-        self.0
-    }
-
-    pub fn new(v: u64) -> Self {
-        Self { 0: v }
-    }
-}
-
 #[self_referencing]
 #[derive(Debug)]
 pub struct SequencedEntry {
@@ -1146,6 +1136,10 @@ pub struct SequencedEntry {
 }
 
 impl SequencedEntry {
+    pub fn size(&self) -> usize {
+        self.borrow_data().len()
+    }
+
     pub fn new_from_entry_bytes(
         clock_value: ClockValue,
         writer_id: u32,

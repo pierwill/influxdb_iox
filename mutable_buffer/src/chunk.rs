@@ -6,9 +6,9 @@ use std::sync::Arc;
 use snafu::{OptionExt, ResultExt, Snafu};
 
 use arrow_deps::arrow::record_batch::RecordBatch;
-use data_types::{database_rules::WriterId, partition_metadata::TableSummary};
+use data_types::{database_rules::WriterId, partition_metadata::TableSummary, ClockValue};
 use internal_types::{
-    entry::{ClockValue, TableBatch},
+    entry::TableBatch,
     selection::Selection,
 };
 use tracker::{MemRegistry, MemTracker};

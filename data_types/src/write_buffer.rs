@@ -1,7 +1,6 @@
-use crate::database_rules::WriterId;
+use crate::{ClockValue, database_rules::WriterId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// The summary information for a writer that has data in a segment
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
@@ -22,7 +21,13 @@ pub struct SegmentPersistence {
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SegmentSummary {
     pub size: u64,
-    pub created_at: DateTime<Utc>,
     pub persisted: Option<SegmentPersistence>,
-    pub writers: BTreeMap<WriterId, WriterSummary>,
+    pub sequenced_entries: Vec<WriterSequence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Serialize, Deserialize)]
+pub struct WriterSequence {
+    // order of these fields is important for sort order created by derive(PartialOrd)
+    pub clock_value: ClockValue,
+    pub writer_id: WriterId,
 }
