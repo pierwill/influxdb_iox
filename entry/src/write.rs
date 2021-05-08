@@ -97,12 +97,7 @@ fn construct_valid_mask(mask: Option<&[u8]>, row_count: usize) -> Vec<u8> {
         Some(data) => {
             debug_assert!(data.len() == buf_len);
 
-            data.iter()
-                .map(|x| {
-                    // Currently the bit mask is backwards
-                    !x.reverse_bits()
-                })
-                .collect()
+            data.iter().map(|x| !x).collect()
         }
         None => {
             // If no null mask they're all valid

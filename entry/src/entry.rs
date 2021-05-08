@@ -5,10 +5,10 @@ use std::sync::Arc;
 use std::{
     collections::BTreeMap,
     convert::{TryFrom, TryInto},
-    fmt::Formatter,
     num::NonZeroU64,
 };
 
+use arrow_util::bitset::BitSet;
 use chrono::{DateTime, Utc};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use ouroboros::self_referencing;
@@ -169,8 +169,8 @@ fn build_table_write_batch<'a>(
     default_time: &DateTime<Utc>,
 ) -> Result<flatbuffers::WIPOffset<entry_fb::TableWriteBatch<'a>>> {
     let mut columns = BTreeMap::new();
-    for (i, line) in lines.iter().enumerate() {
-        let row_number = i + 1;
+    for (idx, line) in lines.iter().enumerate() {
+        let line_number = idx + 1;
 
         if let Some(tagset) = &line.series.tag_set {
             for (key, value) in tagset {
@@ -178,13 +178,13 @@ fn build_table_write_batch<'a>(
                 let builder = columns
                     .entry(key)
                     .or_insert_with(ColumnBuilder::new_tag_column);
-                builder.null_to_row(row_number);
+                builder.null_to_idx(idx);
                 builder
                     .push_tag(value.as_str())
                     .context(TableColumnTypeMismatch {
                         table: table_name,
                         column: key,
-                        line_number: i,
+                        line_number,
                     })?;
             }
         }
@@ -197,57 +197,57 @@ fn build_table_write_batch<'a>(
                     let builder = columns
                         .entry(key)
                         .or_insert_with(ColumnBuilder::new_bool_column);
-                    builder.null_to_row(row_number);
+                    builder.null_to_idx(idx);
                     builder.push_bool(*b).context(TableColumnTypeMismatch {
                         table: table_name,
                         column: key,
-                        line_number: i,
+                        line_number,
                     })?;
                 }
                 FieldValue::U64(v) => {
                     let builder = columns
                         .entry(key)
                         .or_insert_with(ColumnBuilder::new_u64_column);
-                    builder.null_to_row(row_number);
+                    builder.null_to_idx(idx);
                     builder.push_u64(*v).context(TableColumnTypeMismatch {
                         table: table_name,
                         column: key,
-                        line_number: i,
+                        line_number,
                     })?;
                 }
                 FieldValue::F64(v) => {
                     let builder = columns
                         .entry(key)
                         .or_insert_with(ColumnBuilder::new_f64_column);
-                    builder.null_to_row(row_number);
+                    builder.null_to_idx(idx);
                     builder.push_f64(*v).context(TableColumnTypeMismatch {
                         table: table_name,
                         column: key,
-                        line_number: i,
+                        line_number,
                     })?;
                 }
                 FieldValue::I64(v) => {
                     let builder = columns
                         .entry(key)
                         .or_insert_with(ColumnBuilder::new_i64_column);
-                    builder.null_to_row(row_number);
+                    builder.null_to_idx(idx);
                     builder.push_i64(*v).context(TableColumnTypeMismatch {
                         table: table_name,
                         column: key,
-                        line_number: i,
+                        line_number,
                     })?;
                 }
                 FieldValue::String(v) => {
                     let builder = columns
                         .entry(key)
                         .or_insert_with(ColumnBuilder::new_string_column);
-                    builder.null_to_row(row_number);
+                    builder.null_to_idx(idx);
                     builder
                         .push_string(v.as_str())
                         .context(TableColumnTypeMismatch {
                             table: table_name,
                             column: key,
-                            line_number: i,
+                            line_number,
                         })?;
                 }
             }
@@ -264,11 +264,11 @@ fn build_table_write_batch<'a>(
             .context(TableColumnTypeMismatch {
                 table: table_name,
                 column: TIME_COLUMN_NAME,
-                line_number: i,
+                line_number,
             })?;
 
         for b in columns.values_mut() {
-            b.null_to_row(row_number + 1);
+            b.null_to_idx(idx + 1);
         }
     }
 
@@ -502,162 +502,66 @@ impl<'a> Column<'a> {
     }
 }
 
-struct NullMaskBuilder {
-    bytes: Vec<u8>,
-    position: usize,
-}
-
-const BITS_IN_BYTE: usize = 8;
-const LEFT_MOST_BIT_TRUE: u8 = 128;
-
-impl NullMaskBuilder {
-    fn new() -> Self {
-        Self {
-            bytes: vec![0],
-            position: 1,
-        }
-    }
-
-    fn push(&mut self, is_null: bool) {
-        if self.position > BITS_IN_BYTE {
-            self.bytes.push(0);
-            self.position = 1;
-        }
-
-        if is_null {
-            let val: u8 = LEFT_MOST_BIT_TRUE >> (self.position - 1);
-            let last_byte_position = self.bytes.len() - 1;
-            self.bytes[last_byte_position] += val;
-        }
-
-        self.position += 1;
-    }
-
-    #[allow(dead_code)]
-    fn to_bool_vec(&self) -> Vec<bool> {
-        (1..self.row_count() + 1)
-            .map(|r| is_null_value(r, &Some(&self.bytes)))
-            .collect::<Vec<_>>()
-    }
-
-    fn row_count(&self) -> usize {
-        self.bytes.len() * BITS_IN_BYTE - BITS_IN_BYTE + self.position - 1
-    }
-
-    fn has_nulls(&self) -> bool {
-        for b in &self.bytes {
-            if *b > 0 {
-                return true;
-            }
-        }
-
-        false
-    }
-}
-
-impl std::fmt::Debug for NullMaskBuilder {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        for i in 1..self.row_count() {
-            let bit = if is_null_value(i, &Some(&self.bytes)) {
-                1
-            } else {
-                0
-            };
-
-            write!(f, "{}", bit)?;
-            if i % 4 == 0 {
-                write!(f, " ")?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-fn is_null_value(row: usize, mask: &Option<&[u8]>) -> bool {
-    match mask {
-        Some(mask) => {
-            let mut position = (row % BITS_IN_BYTE) as u8;
-            let mut byte = row / BITS_IN_BYTE;
-
-            if position == 0 {
-                byte -= 1;
-                position = BITS_IN_BYTE as u8;
-            }
-
-            if byte >= mask.len() {
-                return true;
-            }
-
-            mask[byte] & (LEFT_MOST_BIT_TRUE >> (position - 1)) > 0
-        }
-        None => false,
-    }
-}
-
 #[derive(Debug)]
 struct ColumnBuilder<'a> {
-    nulls: NullMaskBuilder,
+    nulls: BitSet,
     values: ColumnRaw<'a>,
 }
 
 impl<'a> ColumnBuilder<'a> {
     fn new_tag_column() -> Self {
         Self {
-            nulls: NullMaskBuilder::new(),
+            nulls: BitSet::new(),
             values: ColumnRaw::Tag(Vec::new()),
         }
     }
 
     fn new_string_column() -> Self {
         Self {
-            nulls: NullMaskBuilder::new(),
+            nulls: BitSet::new(),
             values: ColumnRaw::String(Vec::new()),
         }
     }
 
     fn new_time_column() -> Self {
         Self {
-            nulls: NullMaskBuilder::new(),
+            nulls: BitSet::new(),
             values: ColumnRaw::Time(Vec::new()),
         }
     }
 
     fn new_bool_column() -> Self {
         Self {
-            nulls: NullMaskBuilder::new(),
+            nulls: BitSet::new(),
             values: ColumnRaw::Bool(Vec::new()),
         }
     }
 
     fn new_u64_column() -> Self {
         Self {
-            nulls: NullMaskBuilder::new(),
+            nulls: BitSet::new(),
             values: ColumnRaw::U64(Vec::new()),
         }
     }
 
     fn new_f64_column() -> Self {
         Self {
-            nulls: NullMaskBuilder::new(),
+            nulls: BitSet::new(),
             values: ColumnRaw::F64(Vec::new()),
         }
     }
 
     fn new_i64_column() -> Self {
         Self {
-            nulls: NullMaskBuilder::new(),
+            nulls: BitSet::new(),
             values: ColumnRaw::I64(Vec::new()),
         }
     }
 
-    // ensures there are at least as many rows (or nulls) to row_number - 1
-    fn null_to_row(&mut self, row_number: usize) {
-        let mut row_count = self.nulls.row_count();
-
-        while row_count < row_number - 1 {
-            self.nulls.push(true);
-            row_count += 1;
+    // ensures there are at least as many rows (or nulls) to idx
+    fn null_to_idx(&mut self, idx: usize) {
+        for _ in self.nulls.len()..idx {
+            self.nulls.push(true)
         }
     }
 
@@ -793,8 +697,8 @@ impl<'a> ColumnBuilder<'a> {
         column_name: &str,
     ) -> WIPOffset<entry_fb::Column<'a>> {
         let name = Some(fbb.create_string(column_name));
-        let null_mask = if self.nulls.has_nulls() {
-            Some(fbb.create_vector_direct(&self.nulls.bytes))
+        let null_mask = if self.nulls.count_set() != 0 {
+            Some(fbb.create_vector_direct(self.nulls.bytes()))
         } else {
             None
         };
@@ -1719,54 +1623,6 @@ mod tests {
         );
         assert_eq!(&valid, &[false, true, false]);
         assert_eq!(col.values.f64().unwrap(), &[23.2]);
-    }
-
-    #[test]
-    fn null_mask_builder() {
-        let mut m = NullMaskBuilder::new();
-        m.push(true);
-        m.push(false);
-        m.push(true);
-        assert_eq!(m.row_count(), 3);
-        assert_eq!(m.to_bool_vec(), vec![true, false, true]);
-    }
-
-    #[test]
-    fn null_mask_builder_eight_edge_case() {
-        let mut m = NullMaskBuilder::new();
-        m.push(false);
-        m.push(true);
-        m.push(true);
-        m.push(false);
-        m.push(false);
-        m.push(true);
-        m.push(true);
-        m.push(false);
-        assert_eq!(m.row_count(), 8);
-        assert_eq!(
-            m.to_bool_vec(),
-            vec![false, true, true, false, false, true, true, false]
-        );
-    }
-
-    #[test]
-    fn null_mask_builder_more_than_eight() {
-        let mut m = NullMaskBuilder::new();
-        m.push(false);
-        m.push(true);
-        m.push(true);
-        m.push(false);
-        m.push(false);
-        m.push(true);
-        m.push(false);
-        m.push(false);
-        m.push(false);
-        m.push(true);
-        assert_eq!(m.row_count(), 10);
-        assert_eq!(
-            m.to_bool_vec(),
-            vec![false, true, true, false, false, true, false, false, false, true]
-        );
     }
 
     #[test]

@@ -85,9 +85,31 @@ impl BitSet {
 
     /// Returns if the given index is set
     pub fn get(&self, idx: usize) -> bool {
-        let byte_idx = idx >> 3;
-        let bit_idx = idx & 7;
-        (self.buffer[byte_idx] >> bit_idx) & 1 != 0
+        is_bit_set(idx, &self.buffer)
+    }
+
+    /// Append a boolean value
+    pub fn push(&mut self, set: bool) {
+        self.append_unset(1);
+        if set {
+            self.set(self.len - 1)
+        }
+    }
+
+    /// Returns the number of set bits
+    pub fn count_set(&self) -> usize {
+        self.buffer.iter().map(|x| x.count_ones() as usize).sum()
+    }
+
+    /// Returns the number of unset bits
+    pub fn count_unset(&self) -> usize {
+        let total: usize = self.buffer.iter().map(|x| x.count_zeros() as usize).sum();
+        total + (self.len & 7) - 8
+    }
+
+    /// Returns a reference to the compacted array
+    pub fn bytes(&self) -> &[u8] {
+        self.buffer.as_slice()
     }
 
     /// Converts this BitSet to a buffer compatible with arrows boolean encoding
@@ -104,6 +126,12 @@ impl BitSet {
     pub fn byte_len(&self) -> usize {
         self.buffer.len()
     }
+}
+
+pub fn is_bit_set(idx: usize, buffer: &[u8]) -> bool {
+    let byte_idx = idx >> 3;
+    let bit_idx = idx & 7;
+    (buffer[byte_idx] >> bit_idx) & 1 != 0
 }
 
 /// Returns an iterator over all the bits in a packed mask
@@ -228,6 +256,21 @@ mod tests {
         assert!(!mask.get(8));
         assert!(mask.get(9));
         assert!(mask.get(19));
+    }
+
+    #[test]
+    fn test_push() {
+        let bools = &[
+            false, true, false, true, false, false, true, true, true, false, true, true,
+        ];
+        let mut mask = BitSet::new();
+        for bool in bools {
+            mask.push(*bool)
+        }
+        let compacted = compact_bools(bools);
+        assert_eq!(compacted, mask.buffer);
+        assert_eq!(mask.count_set(), 7);
+        assert_eq!(mask.count_unset(), 5);
     }
 
     #[test]
