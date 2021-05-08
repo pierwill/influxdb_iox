@@ -30,6 +30,13 @@ impl<K: AsPrimitive<usize> + FromPrimitive + Zero> PackedStringArray<K> {
         Self::default()
     }
 
+    pub fn new_empty(len: usize) -> Self {
+        Self {
+            offsets: vec![K::zero(); len + 1],
+            storage: String::new(),
+        }
+    }
+
     /// Append a value
     ///
     /// Returns the index of the appended data
@@ -58,6 +65,12 @@ impl<K: AsPrimitive<usize> + FromPrimitive + Zero> PackedStringArray<K> {
             array: &self,
             index: 0,
         }
+    }
+
+    /// Pads with empty strings to reach length
+    pub fn extend(&mut self, len: usize) {
+        let offset = K::from_usize(self.storage.len()).expect("failed to fit into offset type");
+        self.offsets.resize(self.offsets.len() + len, offset);
     }
 
     pub fn len(&self) -> usize {
@@ -123,5 +136,20 @@ mod tests {
         assert_eq!(array.get(1).unwrap(), "world");
         assert_eq!(array.get(2).unwrap(), "cupcake");
         assert!(array.get(-1_i32 as usize).is_none());
+
+        assert!(array.get(3).is_none());
+
+        array.extend(2);
+        assert_eq!(array.get(3).unwrap(), "");
+        assert_eq!(array.get(4).unwrap(), "");
+        assert!(array.get(5).is_none());
+    }
+
+    #[test]
+    fn test_empty() {
+        let array = PackedStringArray::<u8>::new_empty(20);
+        assert_eq!(array.get(12).unwrap(), "");
+        assert_eq!(array.get(9).unwrap(), "");
+        assert_eq!(array.get(3).unwrap(), "");
     }
 }
