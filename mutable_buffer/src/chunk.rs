@@ -2,7 +2,6 @@
 //! some chunk) in the mutable store.
 use std::{
     collections::{BTreeSet, HashMap},
-    convert::TryFrom,
     sync::Arc,
 };
 
@@ -10,9 +9,9 @@ use parking_lot::Mutex;
 use snafu::{ResultExt, Snafu};
 
 use arrow::record_batch::RecordBatch;
-use data_types::{partition_metadata::TableSummary, server_id::ServerId};
-use entry::{ClockValue, TableBatch};
+use data_types::partition_metadata::TableSummary;
 use internal_types::selection::Selection;
+use internal_types::write::TableWrite;
 use tracker::{MemRegistry, MemTracker};
 
 use crate::chunk::snapshot::ChunkSnapshot;
@@ -24,7 +23,7 @@ pub mod snapshot;
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Error writing table '{}': {}", table_name, source))]
-    TableWrite {
+    TableWriteError {
         table_name: String,
         source: crate::table::Error,
     },
@@ -87,26 +86,21 @@ impl Chunk {
         chunk
     }
 
-    pub fn write_table_batches(
-        &mut self,
-        clock_value: ClockValue,
-        server_id: ServerId,
-        batches: &[TableBatch<'_>],
-    ) -> Result<()> {
-        for batch in batches {
-            let table_name = batch.name();
-            let table_id = self.dictionary.lookup_value_or_insert(table_name).into();
+    pub fn write_table_batch(&mut self, write: TableWrite<'_>) -> Result<()> {
+        let table_id = self
+            .dictionary
+            .lookup_value_or_insert(write.table_name.as_ref())
+            .into();
 
-            let table = self
-                .tables
-                .entry(table_id)
-                .or_insert_with(|| Table::new(table_id));
+        let table = self
+            .tables
+            .entry(table_id)
+            .or_insert_with(|| Table::new(table_id));
 
-            let columns = batch.columns();
-            table
-                .write_columns(&mut self.dictionary, clock_value, server_id, columns)
-                .context(TableWrite { table_name })?;
-        }
+        let table_name = write.table_name.clone();
+        table
+            .append(&mut self.dictionary, write)
+            .context(TableWriteError { table_name })?;
 
         // Invalidate chunk snapshot
         *self
@@ -251,11 +245,9 @@ pub mod test_helpers {
         let entry = lp_to_entry(lp);
 
         for w in entry.partition_writes().unwrap() {
-            chunk.write_table_batches(
-                ClockValue::try_from(5).unwrap(),
-                ServerId::try_from(1).unwrap(),
-                &w.table_batches(),
-            )?;
+            for batch in w.table_batches() {
+                chunk.write_table_batch(batch.into())?;
+            }
         }
 
         Ok(())
@@ -264,10 +256,10 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use arrow_util::assert_batches_eq;
 
     use super::test_helpers::write_lp_to_chunk;
+    use super::*;
 
     #[test]
     fn writes_table_batches() {

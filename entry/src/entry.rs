@@ -382,13 +382,13 @@ pub struct TableBatch<'a> {
 }
 
 impl<'a> TableBatch<'a> {
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &'a str {
         self.fb
             .name()
             .expect("name must be present in flatbuffers TableWriteBatch")
     }
 
-    pub fn columns(&self) -> Vec<Column<'_>> {
+    pub fn columns(&self) -> Vec<Column<'a>> {
         match self.fb.columns().as_ref() {
             Some(columns) => {
                 let row_count = self.row_count();
@@ -448,7 +448,7 @@ pub struct Column<'a> {
 }
 
 impl<'a> Column<'a> {
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &'a str {
         self.fb
             .name()
             .expect("name must be present in flatbuffers Column")

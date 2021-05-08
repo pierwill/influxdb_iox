@@ -5,11 +5,7 @@ use crate::{
     column::Column,
     dictionary::{Dictionary, DID},
 };
-use data_types::{
-    partition_metadata::{ColumnSummary, InfluxDbType},
-    server_id::ServerId,
-};
-use entry::{self, ClockValue};
+use data_types::partition_metadata::{ColumnSummary, InfluxDbType};
 use internal_types::{
     schema::{builder::SchemaBuilder, InfluxColumnType, Schema},
     selection::Selection,
@@ -18,6 +14,7 @@ use internal_types::{
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use arrow::{array::Array, record_batch::RecordBatch};
+use internal_types::write::TableWrite;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -132,13 +129,8 @@ impl Table {
 
     /// Validates the schema of the passed in columns, then adds their values to
     /// the associated columns in the table and updates summary statistics.
-    pub fn write_columns(
-        &mut self,
-        dictionary: &mut Dictionary,
-        _clock_value: ClockValue,
-        _server_id: ServerId,
-        columns: Vec<entry::Column<'_>>,
-    ) -> Result<()> {
+    pub fn append<'a>(&mut self, dictionary: &mut Dictionary, write: TableWrite<'a>) -> Result<()> {
+        let columns = write.columns.as_ref();
         let row_count_before_insert = self.row_count();
         let additional_rows = columns.first().map(|x| x.row_count).unwrap_or_default();
         let final_row_count = row_count_before_insert + additional_rows;
@@ -150,16 +142,16 @@ impl Table {
                 ensure!(
                     column.row_count == additional_rows,
                     IncorrectRowCount {
-                        column: column.name(),
+                        column: column.name.as_ref(),
                         expected: additional_rows,
                         actual: column.row_count,
                     }
                 );
 
-                let id = dictionary.lookup_value_or_insert(column.name());
+                let id = dictionary.lookup_value_or_insert(column.name.as_ref());
                 if let Some(c) = self.columns.get(&id) {
-                    c.validate_schema(&column).context(ColumnError {
-                        column: column.name(),
+                    c.validate_schema(column.influx_type).context(ColumnError {
+                        column: column.name.as_ref(),
                     })?;
                 }
 
@@ -167,16 +159,14 @@ impl Table {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        for (fb_column, column_id) in columns.into_iter().zip(column_ids.into_iter()) {
-            let influx_type = fb_column.influx_type();
-
+        for (write, column_id) in columns.into_iter().zip(column_ids.into_iter()) {
             let column = self
                 .columns
                 .entry(column_id)
-                .or_insert_with(|| Column::new(row_count_before_insert, influx_type));
+                .or_insert_with(|| Column::new(row_count_before_insert, write.influx_type));
 
-            column.append(&fb_column, dictionary).context(ColumnError {
-                column: fb_column.name(),
+            column.append(&write, dictionary).context(ColumnError {
+                column: write.name.as_ref(),
             })?;
 
             assert_eq!(column.len(), final_row_count);
@@ -347,7 +337,6 @@ mod tests {
     use arrow::datatypes::DataType as ArrowDataType;
     use entry::test_helpers::lp_to_entry;
     use internal_types::schema::{InfluxColumnType, InfluxFieldType};
-    use std::convert::TryFrom;
 
     #[test]
     fn table_size() {
@@ -431,44 +420,30 @@ mod tests {
     fn write_columns_validates_schema() {
         let mut dictionary = Dictionary::new();
         let mut table = Table::new(dictionary.lookup_value_or_insert("foo"));
-        let server_id = ServerId::try_from(1).unwrap();
-        let clock_value = ClockValue::try_from(5).unwrap();
 
         let lp = "foo,t1=asdf iv=1i,uv=1u,fv=1.0,bv=true,sv=\"hi\" 1";
         let entry = lp_to_entry(&lp);
         table
-            .write_columns(
+            .append(
                 &mut dictionary,
-                clock_value,
-                server_id,
-                entry
-                    .partition_writes()
-                    .unwrap()
-                    .first()
-                    .unwrap()
+                entry.partition_writes().unwrap()[0]
                     .table_batches()
                     .first()
                     .unwrap()
-                    .columns(),
+                    .into(),
             )
             .unwrap();
 
         let lp = "foo t1=\"string\" 1";
         let entry = lp_to_entry(&lp);
         let response = table
-            .write_columns(
+            .append(
                 &mut dictionary,
-                clock_value,
-                server_id,
-                entry
-                    .partition_writes()
-                    .unwrap()
-                    .first()
-                    .unwrap()
+                entry.partition_writes().unwrap()[0]
                     .table_batches()
                     .first()
                     .unwrap()
-                    .columns(),
+                    .into(),
             )
             .err()
             .unwrap();
@@ -490,19 +465,13 @@ mod tests {
         let lp = "foo iv=1u 1";
         let entry = lp_to_entry(&lp);
         let response = table
-            .write_columns(
+            .append(
                 &mut dictionary,
-                clock_value,
-                server_id,
-                entry
-                    .partition_writes()
-                    .unwrap()
-                    .first()
-                    .unwrap()
+                entry.partition_writes().unwrap()[0]
                     .table_batches()
                     .first()
                     .unwrap()
-                    .columns(),
+                    .into(),
             )
             .err()
             .unwrap();
@@ -524,19 +493,13 @@ mod tests {
         let lp = "foo fv=1i 1";
         let entry = lp_to_entry(&lp);
         let response = table
-            .write_columns(
+            .append(
                 &mut dictionary,
-                clock_value,
-                server_id,
-                entry
-                    .partition_writes()
-                    .unwrap()
-                    .first()
-                    .unwrap()
+                entry.partition_writes().unwrap()[0]
                     .table_batches()
                     .first()
                     .unwrap()
-                    .columns(),
+                    .into(),
             )
             .err()
             .unwrap();
@@ -558,19 +521,13 @@ mod tests {
         let lp = "foo bv=1 1";
         let entry = lp_to_entry(&lp);
         let response = table
-            .write_columns(
+            .append(
                 &mut dictionary,
-                clock_value,
-                server_id,
-                entry
-                    .partition_writes()
-                    .unwrap()
-                    .first()
-                    .unwrap()
+                entry.partition_writes().unwrap()[0]
                     .table_batches()
                     .first()
                     .unwrap()
-                    .columns(),
+                    .into(),
             )
             .err()
             .unwrap();
@@ -592,19 +549,13 @@ mod tests {
         let lp = "foo sv=true 1";
         let entry = lp_to_entry(&lp);
         let response = table
-            .write_columns(
+            .append(
                 &mut dictionary,
-                clock_value,
-                server_id,
-                entry
-                    .partition_writes()
-                    .unwrap()
-                    .first()
-                    .unwrap()
+                entry.partition_writes().unwrap()[0]
                     .table_batches()
                     .first()
                     .unwrap()
-                    .columns(),
+                    .into(),
             )
             .err()
             .unwrap();
@@ -626,19 +577,13 @@ mod tests {
         let lp = "foo,sv=\"bar\" f=3i 1";
         let entry = lp_to_entry(&lp);
         let response = table
-            .write_columns(
+            .append(
                 &mut dictionary,
-                clock_value,
-                server_id,
-                entry
-                    .partition_writes()
-                    .unwrap()
-                    .first()
-                    .unwrap()
+                entry.partition_writes().unwrap()[0]
                     .table_batches()
                     .first()
                     .unwrap()
-                    .columns(),
+                    .into(),
             )
             .err()
             .unwrap();
@@ -663,21 +608,8 @@ mod tests {
         let lp_data = lp_lines.join("\n");
         let entry = lp_to_entry(&lp_data);
 
-        for batch in entry
-            .partition_writes()
-            .unwrap()
-            .first()
-            .unwrap()
-            .table_batches()
-        {
-            table
-                .write_columns(
-                    dictionary,
-                    ClockValue::try_from(5).unwrap(),
-                    ServerId::try_from(1).unwrap(),
-                    batch.columns(),
-                )
-                .unwrap();
+        for batch in entry.partition_writes().unwrap()[0].table_batches() {
+            table.append(dictionary, batch.into()).unwrap();
         }
     }
 }

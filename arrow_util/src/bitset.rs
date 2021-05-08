@@ -106,6 +106,31 @@ impl BitSet {
     }
 }
 
+/// Returns an iterator over all the bits in a packed mask
+pub fn iter_bits(bytes: &[u8], row_count: usize) -> impl Iterator<Item = bool> + '_ {
+    debug_assert!(((row_count + 7) >> 3) >= bytes.len());
+
+    let mut byte_idx = 0;
+    let mut bit_idx = 0;
+    let mut count = 0;
+    std::iter::from_fn(move || {
+        if count == row_count {
+            return None;
+        }
+
+        let ret = bytes[byte_idx] >> bit_idx & 1 != 0;
+        if bit_idx == 7 {
+            byte_idx += 1;
+            bit_idx = 0;
+        } else {
+            bit_idx += 1;
+        }
+        count += 1;
+
+        return Some(ret);
+    })
+}
+
 /// Returns an iterator over set bit positions in increasing order
 pub fn iter_set_positions(bytes: &[u8]) -> impl Iterator<Item = usize> + '_ {
     let mut byte_idx = 0;
@@ -156,6 +181,19 @@ mod tests {
         let indexes: Vec<_> = iter_set_bools(bools).collect();
         assert_eq!(collected.as_slice(), &[0b01001100, 0b00000001]);
         assert_eq!(indexes.as_slice(), &[2, 3, 6, 8])
+    }
+
+    #[test]
+    fn test_iter_bits() {
+        let bools = &[
+            false, false, true, true, false, false, true, false, true, false, false, true,
+        ];
+        let compacted = compact_bools(bools);
+        let c1: Vec<_> = iter_bits(&compacted, bools.len()).collect();
+        let c2: Vec<_> = iter_bits(&compacted, 9).collect();
+
+        assert_eq!(bools, c1.as_slice());
+        assert_eq!(&bools[0..9], c2.as_slice());
     }
 
     #[test]
