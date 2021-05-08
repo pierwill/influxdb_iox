@@ -10,7 +10,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use flatbuffers::{FlatBufferBuilder, Follow, ForwardsUOffset, Vector, VectorIter, WIPOffset};
+use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use ouroboros::self_referencing;
 use snafu::{OptionExt, ResultExt, Snafu};
 
@@ -499,221 +499,6 @@ impl<'a> Column<'a> {
 
     pub fn is_time(&self) -> bool {
         self.fb.logical_column_type() == entry_fb::LogicalColumnType::Time
-    }
-
-    pub fn values(&self) -> TypedValuesIterator<'a> {
-        match self.fb.values_type() {
-            entry_fb::ColumnValues::BoolValues => TypedValuesIterator::Bool(BoolIterator {
-                row_count: self.row_count,
-                position: 0,
-                null_mask: self.fb.null_mask(),
-                value_position: 0,
-                values: self
-                    .fb
-                    .values_as_bool_values()
-                    .expect("invalid flatbuffers")
-                    .values()
-                    .unwrap_or(&[]),
-            }),
-            entry_fb::ColumnValues::StringValues => {
-                let values = self
-                    .fb
-                    .values_as_string_values()
-                    .expect("invalid flatbuffers")
-                    .values()
-                    .expect("flatbuffers StringValues must have string values set")
-                    .iter();
-
-                TypedValuesIterator::String(StringIterator {
-                    row_count: self.row_count,
-                    position: 0,
-                    null_mask: self.fb.null_mask(),
-                    values,
-                })
-            }
-            entry_fb::ColumnValues::I64Values => {
-                let values_iter = self
-                    .fb
-                    .values_as_i64values()
-                    .expect("invalid flatbuffers")
-                    .values()
-                    .unwrap_or_else(|| Vector::new(&[], 0))
-                    .iter();
-
-                TypedValuesIterator::I64(ValIterator {
-                    row_count: self.row_count,
-                    position: 0,
-                    null_mask: self.fb.null_mask(),
-                    values_iter,
-                })
-            }
-            entry_fb::ColumnValues::F64Values => {
-                let values_iter = self
-                    .fb
-                    .values_as_f64values()
-                    .expect("invalid flatbuffers")
-                    .values()
-                    .unwrap_or_else(|| Vector::new(&[], 0))
-                    .iter();
-
-                TypedValuesIterator::F64(ValIterator {
-                    row_count: self.row_count,
-                    position: 0,
-                    null_mask: self.fb.null_mask(),
-                    values_iter,
-                })
-            }
-            entry_fb::ColumnValues::U64Values => {
-                let values_iter = self
-                    .fb
-                    .values_as_u64values()
-                    .expect("invalid flatbuffers")
-                    .values()
-                    .unwrap_or_else(|| Vector::new(&[], 0))
-                    .iter();
-
-                TypedValuesIterator::U64(ValIterator {
-                    row_count: self.row_count,
-                    position: 0,
-                    null_mask: self.fb.null_mask(),
-                    values_iter,
-                })
-            }
-            entry_fb::ColumnValues::BytesValues => unimplemented!(),
-            _ => panic!("unknown fb values type"),
-        }
-    }
-}
-
-/// Wrapper for the iterators for the underlying column types.
-#[derive(Debug)]
-pub enum TypedValuesIterator<'a> {
-    Bool(BoolIterator<'a>),
-    I64(ValIterator<'a, i64>),
-    F64(ValIterator<'a, f64>),
-    U64(ValIterator<'a, u64>),
-    String(StringIterator<'a>),
-}
-
-impl<'a> TypedValuesIterator<'a> {
-    pub fn bool_values(self) -> Option<Vec<Option<bool>>> {
-        match self {
-            Self::Bool(b) => Some(b.collect::<Vec<_>>()),
-            _ => None,
-        }
-    }
-
-    pub fn i64_values(self) -> Option<Vec<Option<i64>>> {
-        match self {
-            Self::I64(v) => Some(v.collect::<Vec<_>>()),
-            _ => None,
-        }
-    }
-
-    pub fn f64_values(self) -> Option<Vec<Option<f64>>> {
-        match self {
-            Self::F64(v) => Some(v.collect::<Vec<_>>()),
-            _ => None,
-        }
-    }
-
-    pub fn u64_values(self) -> Option<Vec<Option<u64>>> {
-        match self {
-            Self::U64(v) => Some(v.collect::<Vec<_>>()),
-            _ => None,
-        }
-    }
-
-    pub fn type_description(&self) -> &str {
-        match self {
-            Self::Bool(_) => "bool",
-            Self::I64(_) => "i64",
-            Self::F64(_) => "f64",
-            Self::U64(_) => "u64",
-            Self::String(_) => "String",
-        }
-    }
-}
-
-/// Iterator over the flatbuffers BoolValues
-#[derive(Debug)]
-pub struct BoolIterator<'a> {
-    pub row_count: usize,
-    position: usize,
-    null_mask: Option<&'a [u8]>,
-    values: &'a [bool],
-    value_position: usize,
-}
-
-impl<'a> Iterator for BoolIterator<'a> {
-    type Item = Option<bool>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.position >= self.row_count || self.value_position >= self.values.len() {
-            return None;
-        }
-
-        self.position += 1;
-        if is_null_value(self.position, &self.null_mask) {
-            return Some(None);
-        }
-
-        let val = Some(self.values[self.value_position]);
-        self.value_position += 1;
-
-        Some(val)
-    }
-}
-
-/// Iterator over the flatbuffers I64Values, F64Values, and U64Values.
-#[derive(Debug)]
-pub struct ValIterator<'a, T: Follow<'a> + Follow<'a, Inner = T>> {
-    pub row_count: usize,
-    position: usize,
-    null_mask: Option<&'a [u8]>,
-    values_iter: VectorIter<'a, T>,
-}
-
-impl<'a, T: Follow<'a> + Follow<'a, Inner = T>> Iterator for ValIterator<'a, T> {
-    type Item = Option<T>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.position >= self.row_count {
-            return None;
-        }
-
-        self.position += 1;
-        if is_null_value(self.position, &self.null_mask) {
-            return Some(None);
-        }
-
-        Some(self.values_iter.next())
-    }
-}
-
-/// Iterator over the flatbuffers StringValues
-#[derive(Debug)]
-pub struct StringIterator<'a> {
-    pub row_count: usize,
-    position: usize,
-    null_mask: Option<&'a [u8]>,
-    values: VectorIter<'a, ForwardsUOffset<&'a str>>,
-}
-
-impl<'a> Iterator for StringIterator<'a> {
-    type Item = Option<&'a str>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.position >= self.row_count {
-            return None;
-        }
-
-        self.position += 1;
-        if is_null_value(self.position, &self.null_mask) {
-            return Some(None);
-        }
-
-        Some(self.values.next())
     }
 }
 
@@ -1657,6 +1442,8 @@ mod tests {
 
     use super::test_helpers::*;
     use super::*;
+    use arrow_util::bitset::iter_bits;
+    use internal_types::write::TableWrite;
 
     #[test]
     fn shards_lines() {
@@ -1795,53 +1582,53 @@ mod tests {
         let table_batches = partition_writes.first().unwrap().table_batches();
         let batch = table_batches.first().unwrap();
 
-        let columns = batch.columns();
-
         assert_eq!(batch.row_count(), 2);
+
+        let write: TableWrite = batch.into();
+        let columns = write.columns;
         assert_eq!(columns.len(), 7);
 
-        let col = columns.get(0).unwrap();
-        assert_eq!(col.name(), "bval");
-        let values = col.values().bool_values().unwrap();
-        assert_eq!(&values, &[Some(true), Some(false)]);
+        let col = &columns[0];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "bval");
+        assert_eq!(&valid, &[true, true]);
+        assert_eq!(col.values.bool().unwrap(), &[true, false]);
 
-        let col = columns.get(1).unwrap();
-        assert_eq!(col.name(), "fval");
-        let values = col.values().f64_values().unwrap();
-        assert_eq!(&values, &[Some(1.2), Some(2.2)]);
+        let col = &columns[1];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "fval");
+        assert_eq!(&valid, &[true, true]);
+        assert_eq!(col.values.f64().unwrap(), &[1.2, 2.2]);
 
-        let col = columns.get(2).unwrap();
-        assert_eq!(col.name(), "host");
-        let values = match col.values() {
-            TypedValuesIterator::String(v) => v,
-            _ => panic!("wrong type"),
-        };
-        let values = values.collect::<Vec<_>>();
-        assert_eq!(&values, &[Some("a"), Some("b")]);
+        let col = &columns[2];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "host");
+        assert_eq!(&valid, &[true, true]);
+        assert_eq!(col.values.string().unwrap(), &["a", "b"]);
 
-        let col = columns.get(3).unwrap();
-        assert_eq!(col.name(), "ival");
-        let values = col.values().i64_values().unwrap();
-        assert_eq!(&values, &[Some(23), Some(22)]);
+        let col = &columns[3];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "ival");
+        assert_eq!(&valid, &[true, true]);
+        assert_eq!(col.values.i64().unwrap(), &[23, 22]);
 
-        let col = columns.get(4).unwrap();
-        assert_eq!(col.name(), "sval");
-        let values = match col.values() {
-            TypedValuesIterator::String(v) => v,
-            _ => panic!("wrong type"),
-        };
-        let values = values.collect::<Vec<_>>();
-        assert_eq!(&values, &[Some("hi"), Some("world")]);
+        let col = &columns[4];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "sval");
+        assert_eq!(&valid, &[true, true]);
+        assert_eq!(col.values.string().unwrap(), &["hi", "world"]);
 
-        let col = columns.get(5).unwrap();
-        assert_eq!(col.name(), TIME_COLUMN_NAME);
-        let values = col.values().i64_values().unwrap();
-        assert_eq!(&values, &[Some(1), Some(2)]);
+        let col = &columns[5];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "time");
+        assert_eq!(&valid, &[true, true]);
+        assert_eq!(col.values.i64().unwrap(), &[1, 2]);
 
-        let col = columns.get(6).unwrap();
-        assert_eq!(col.name(), "uval");
-        let values = col.values().u64_values().unwrap();
-        assert_eq!(&values, &[Some(7), Some(1)]);
+        let col = &columns[6];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "uval");
+        assert_eq!(&valid, &[true, true]);
+        assert_eq!(col.values.u64().unwrap(), &[7, 1]);
     }
 
     #[test]
@@ -1866,64 +1653,72 @@ mod tests {
         let table_batches = partition_writes.first().unwrap().table_batches();
         let batch = table_batches.first().unwrap();
 
-        let columns = batch.columns();
-
         assert_eq!(batch.row_count(), 3);
+
+        let write: TableWrite = batch.into();
+        let columns = write.columns;
         assert_eq!(columns.len(), 7);
 
-        let col = columns.get(0).unwrap();
-        assert_eq!(col.name(), "bool");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Field);
-        let values = col.values().bool_values().unwrap();
-        assert_eq!(&values, &[None, None, Some(true)]);
+        let col = &columns[0];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "bool");
+        assert_eq!(
+            col.influx_type,
+            InfluxColumnType::Field(InfluxFieldType::Boolean)
+        );
+        assert_eq!(&valid, &[false, false, true]);
+        assert_eq!(col.values.bool().unwrap(), &[true]);
 
-        let col = columns.get(1).unwrap();
-        assert_eq!(col.name(), "host");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Tag);
-        let values = match col.values() {
-            TypedValuesIterator::String(v) => v,
-            _ => panic!("wrong type"),
-        };
-        let values = values.collect::<Vec<_>>();
-        assert_eq!(&values, &[Some("a"), Some("a"), None]);
+        let col = &columns[1];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "host");
+        assert_eq!(col.influx_type, InfluxColumnType::Tag);
+        assert_eq!(&valid, &[true, true, false]);
+        assert_eq!(col.values.string().unwrap(), &["a", "a"]);
 
-        let col = columns.get(2).unwrap();
-        assert_eq!(col.name(), "region");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Tag);
-        let values = match col.values() {
-            TypedValuesIterator::String(v) => v,
-            _ => panic!("wrong type"),
-        };
-        let values = values.collect::<Vec<_>>();
-        assert_eq!(&values, &[None, Some("west"), None]);
+        let col = &columns[2];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "region");
+        assert_eq!(col.influx_type, InfluxColumnType::Tag);
+        assert_eq!(&valid, &[false, true, false]);
+        assert_eq!(col.values.string().unwrap(), &["west"]);
 
-        let col = columns.get(3).unwrap();
-        assert_eq!(col.name(), "string");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Field);
-        let values = match col.values() {
-            TypedValuesIterator::String(v) => v,
-            _ => panic!("wrong type"),
-        };
-        let values = values.collect::<Vec<_>>();
-        assert_eq!(&values, &[None, None, Some("hello")]);
+        let col = &columns[3];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "string");
+        assert_eq!(
+            col.influx_type,
+            InfluxColumnType::Field(InfluxFieldType::String)
+        );
+        assert_eq!(&valid, &[false, false, true]);
+        assert_eq!(col.values.string().unwrap(), &["hello"]);
 
-        let col = columns.get(4).unwrap();
-        assert_eq!(col.name(), TIME_COLUMN_NAME);
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Time);
-        let values = col.values().i64_values().unwrap();
-        assert_eq!(&values, &[Some(983), Some(2343), Some(222)]);
+        let col = &columns[4];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, TIME_COLUMN_NAME);
+        assert_eq!(col.influx_type, InfluxColumnType::Timestamp);
+        assert_eq!(&valid, &[true, true, true]);
+        assert_eq!(col.values.i64().unwrap(), &[983, 2343, 222]);
 
-        let col = columns.get(5).unwrap();
-        assert_eq!(col.name(), "val");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Field);
-        let values = col.values().i64_values().unwrap();
-        assert_eq!(&values, &[Some(23), None, Some(21)]);
+        let col = &columns[5];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "val");
+        assert_eq!(
+            col.influx_type,
+            InfluxColumnType::Field(InfluxFieldType::Integer)
+        );
+        assert_eq!(&valid, &[true, false, true]);
+        assert_eq!(col.values.i64().unwrap(), &[23, 21]);
 
-        let col = columns.get(6).unwrap();
-        assert_eq!(col.name(), "val2");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Field);
-        let values = col.values().f64_values().unwrap();
-        assert_eq!(&values, &[None, Some(23.2), None]);
+        let col = &columns[6];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "val2");
+        assert_eq!(
+            col.influx_type,
+            InfluxColumnType::Field(InfluxFieldType::Float)
+        );
+        assert_eq!(&valid, &[false, true, false]);
+        assert_eq!(col.values.f64().unwrap(), &[23.2]);
     }
 
     #[test]
@@ -1987,15 +1782,13 @@ mod tests {
             .entry
             .partition_writes()
             .unwrap();
-        let table_batches = partition_writes.first().unwrap().table_batches();
-        let batch = table_batches.first().unwrap();
-        let columns = batch.columns();
+        let table_batch = &partition_writes[0].table_batches()[0];
+        assert_eq!(table_batch.row_count(), 1);
+        let table: TableWrite = table_batch.into();
 
-        assert_eq!(batch.row_count(), 1);
-        let col = columns.get(1).unwrap();
-        assert_eq!(col.name(), "val");
-        let values = col.values().i64_values().unwrap();
-        assert_eq!(&values, &[Some(1)]);
+        let col = &table.columns[1];
+        assert_eq!(col.name, "val");
+        assert_eq!(col.values.i64().unwrap(), &[1]);
 
         let lp = vec![
             "a val=1i 1",
@@ -2018,27 +1811,15 @@ mod tests {
             .entry
             .partition_writes()
             .unwrap();
-        let table_batches = partition_writes.first().unwrap().table_batches();
-        let batch = table_batches.first().unwrap();
-        let columns = batch.columns();
+        let table_batch = &partition_writes[0].table_batches()[0];
+        assert_eq!(table_batch.row_count(), 8);
+        let table: TableWrite = table_batch.into();
 
-        assert_eq!(batch.row_count(), 8);
-        let col = columns.get(1).unwrap();
-        assert_eq!(col.name(), "val");
-        let values = col.values().i64_values().unwrap();
-        assert_eq!(
-            &values,
-            &[
-                Some(1),
-                Some(1),
-                Some(1),
-                Some(1),
-                Some(1),
-                Some(1),
-                None,
-                Some(1)
-            ]
-        );
+        let col = &table.columns[1];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "val");
+        assert_eq!(col.values.i64().unwrap(), &[1, 1, 1, 1, 1, 1, 1]);
+        assert_eq!(&valid, &[true, true, true, true, true, true, false, true]);
 
         let lp = vec![
             "a val=1i 1",
@@ -2062,28 +1843,18 @@ mod tests {
             .entry
             .partition_writes()
             .unwrap();
-        let table_batches = partition_writes.first().unwrap().table_batches();
-        let batch = table_batches.first().unwrap();
-        let columns = batch.columns();
+        let table_batch = &partition_writes[0].table_batches()[0];
+        assert_eq!(table_batch.row_count(), 9);
+        let table: TableWrite = table_batch.into();
 
-        assert_eq!(batch.row_count(), 9);
-        let col = columns.get(1).unwrap();
-        assert_eq!(col.name(), "val");
-        let values = col.values().i64_values().unwrap();
+        let col = &table.columns[1];
+        let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
+        assert_eq!(col.name, "val");
+        assert_eq!(col.values.i64().unwrap(), &[1, 1, 1, 1, 1, 1, 1, 1]);
         assert_eq!(
-            &values,
-            &[
-                Some(1),
-                Some(1),
-                Some(1),
-                Some(1),
-                Some(1),
-                Some(1),
-                None,
-                Some(1),
-                Some(1)
-            ]
-        );
+            &valid,
+            &[true, true, true, true, true, true, false, true, true]
+        )
     }
 
     #[test]
@@ -2102,15 +1873,15 @@ mod tests {
             .entry
             .partition_writes()
             .unwrap();
-        let table_batches = partition_writes.first().unwrap().table_batches();
-        let batch = table_batches.first().unwrap();
-        let columns = batch.columns();
+        let table_batch = &partition_writes[0].table_batches()[0];
+        assert_eq!(table_batch.row_count(), 2);
+        let table: TableWrite = table_batch.into();
 
-        let col = columns.get(0).unwrap();
-        assert_eq!(col.name(), TIME_COLUMN_NAME);
-        let values = col.values().i64_values().unwrap();
-        assert!(values[0].unwrap() > t);
-        assert_eq!(values[1], Some(123));
+        let col = &table.columns[0];
+        assert_eq!(col.name, TIME_COLUMN_NAME);
+        let values = col.values.i64().unwrap();
+        assert!(values[0] > t);
+        assert_eq!(values[1], 123);
     }
 
     #[test]
@@ -2159,65 +1930,7 @@ mod tests {
         let partition_writes = sequenced_entry.partition_writes().unwrap();
         let table_batches = partition_writes.first().unwrap().table_batches();
         let batch = table_batches.first().unwrap();
-
-        let columns = batch.columns();
-
         assert_eq!(batch.row_count(), 3);
-        assert_eq!(columns.len(), 7);
-
-        let col = columns.get(0).unwrap();
-        assert_eq!(col.name(), "bool");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Field);
-        let values = col.values().bool_values().unwrap();
-        assert_eq!(&values, &[None, None, Some(true)]);
-
-        let col = columns.get(1).unwrap();
-        assert_eq!(col.name(), "host");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Tag);
-        let values = match col.values() {
-            TypedValuesIterator::String(v) => v,
-            _ => panic!("wrong type"),
-        };
-        let values = values.collect::<Vec<_>>();
-        assert_eq!(&values, &[Some("a"), Some("a"), None]);
-
-        let col = columns.get(2).unwrap();
-        assert_eq!(col.name(), "region");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Tag);
-        let values = match col.values() {
-            TypedValuesIterator::String(v) => v,
-            _ => panic!("wrong type"),
-        };
-        let values = values.collect::<Vec<_>>();
-        assert_eq!(&values, &[None, Some("west"), None]);
-
-        let col = columns.get(3).unwrap();
-        assert_eq!(col.name(), "string");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Field);
-        let values = match col.values() {
-            TypedValuesIterator::String(v) => v,
-            _ => panic!("wrong type"),
-        };
-        let values = values.collect::<Vec<_>>();
-        assert_eq!(&values, &[None, None, Some("hello")]);
-
-        let col = columns.get(4).unwrap();
-        assert_eq!(col.name(), TIME_COLUMN_NAME);
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Time);
-        let values = col.values().i64_values().unwrap();
-        assert_eq!(&values, &[Some(983), Some(2343), Some(222)]);
-
-        let col = columns.get(5).unwrap();
-        assert_eq!(col.name(), "val");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Field);
-        let values = col.values().i64_values().unwrap();
-        assert_eq!(&values, &[Some(23), None, Some(21)]);
-
-        let col = columns.get(6).unwrap();
-        assert_eq!(col.name(), "val2");
-        assert_eq!(col.logical_type(), entry_fb::LogicalColumnType::Field);
-        let values = col.values().f64_values().unwrap();
-        assert_eq!(&values, &[None, Some(23.2), None]);
     }
 
     #[test]
