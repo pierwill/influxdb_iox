@@ -25,7 +25,7 @@ impl<K: Zero> Default for PackedStringArray<K> {
     }
 }
 
-impl<O: AsPrimitive<usize> + FromPrimitive + Zero> PackedStringArray<O> {
+impl<K: AsPrimitive<usize> + FromPrimitive + Zero> PackedStringArray<K> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -37,7 +37,7 @@ impl<O: AsPrimitive<usize> + FromPrimitive + Zero> PackedStringArray<O> {
         let id = self.offsets.len() - 1;
 
         let offset = self.storage.len() + data.len();
-        let offset = O::from_usize(offset).expect("failed to fit into offset type");
+        let offset = K::from_usize(offset).expect("failed to fit into offset type");
 
         self.offsets.push(offset);
         self.storage.push_str(data);
@@ -51,6 +51,17 @@ impl<O: AsPrimitive<usize> + FromPrimitive + Zero> PackedStringArray<O> {
         let end_offset = self.offsets.get(index + 1)?.as_();
 
         Some(&self.storage[start_offset..end_offset])
+    }
+
+    pub fn iter(&self) -> PackedStringIterator<'_, K> {
+        PackedStringIterator {
+            array: &self,
+            index: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.offsets.len() - 1
     }
 
     /// Return the amount of memory in bytes taken up by this array
@@ -73,6 +84,26 @@ impl PackedStringArray<i32> {
             .build();
 
         StringArray::from(data)
+    }
+}
+
+pub struct PackedStringIterator<'a, K> {
+    array: &'a PackedStringArray<K>,
+    index: usize,
+}
+
+impl<'a, K: AsPrimitive<usize> + FromPrimitive + Zero> Iterator for PackedStringIterator<'a, K> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.array.get(self.index)?;
+        self.index += 1;
+        Some(item)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.array.len() - self.index;
+        (len, Some(len))
     }
 }
 
