@@ -98,7 +98,8 @@ impl Partition {
         table.next_chunk_id += 1;
 
         let chunk = Arc::new(self.lock_tracker.new_lock(Chunk::new_open(
-            batch.into(),
+            batch.name(),
+            &batch.into(),
             &self.key,
             chunk_id,
             memory_registry,

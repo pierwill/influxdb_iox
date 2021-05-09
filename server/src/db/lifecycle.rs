@@ -376,7 +376,8 @@ mod tests {
         let entry = lp_to_entry("table1 bar=10 10");
         let write = entry.partition_writes().unwrap().remove(0);
         let batch = write.table_batches().remove(0);
-        let mut chunk = Chunk::new_open(batch.into(), "", id, &MemRegistry::new()).unwrap();
+        let mut chunk =
+            Chunk::new_open("table1", &batch.into(), "", id, &MemRegistry::new()).unwrap();
         chunk.set_timestamps(
             time_of_first_write.map(from_secs),
             time_of_last_write.map(from_secs),

@@ -1186,7 +1186,7 @@ impl Db {
                                 chunk.mutable_buffer().expect("cannot mutate open chunk");
 
                             mb_chunk
-                                .write_table_batch(table_batch.into())
+                                .write_table_batch(table_batch.name(), &table_batch.into())
                                 .context(WriteEntry {
                                     partition_key,
                                     chunk_id,

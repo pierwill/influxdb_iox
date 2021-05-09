@@ -129,18 +129,20 @@ impl Chunk {
     /// 3. a new open chunk is created using the buffer
     /// 4. a write is recorded (see [`record_write`](Self::record_write))
     pub(crate) fn new_open(
-        batch: TableWrite<'_>,
+        table_name: &str,
+        batch: &TableWrite<'_>,
         partition_key: impl AsRef<str>,
         id: u32,
         memory_registry: &MemRegistry,
     ) -> Result<Self> {
-        let table_name = Arc::from(batch.table_name.as_ref());
+        let table_name = Arc::from(table_name);
 
         let mut mb = mutable_buffer::chunk::Chunk::new(id, memory_registry);
-        mb.write_table_batch(batch).context(OpenChunk {
-            partition_key: partition_key.as_ref(),
-            chunk_id: id,
-        })?;
+        mb.write_table_batch(&table_name, batch)
+            .context(OpenChunk {
+                partition_key: partition_key.as_ref(),
+                chunk_id: id,
+            })?;
 
         let state = ChunkState::Open(mb);
         let mut chunk = Self {

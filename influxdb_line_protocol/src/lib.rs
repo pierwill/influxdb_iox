@@ -453,6 +453,15 @@ impl From<EscapedStr<'_>> for String {
     }
 }
 
+impl<'a> From<EscapedStr<'a>> for Cow<'a, str> {
+    fn from(other: EscapedStr<'a>) -> Self {
+        match other {
+            EscapedStr::SingleSlice(s) => Self::Borrowed(s),
+            EscapedStr::CopiedValue(s) => Self::Owned(s),
+        }
+    }
+}
+
 impl From<&EscapedStr<'_>> for String {
     fn from(other: &EscapedStr<'_>) -> Self {
         other.to_string()

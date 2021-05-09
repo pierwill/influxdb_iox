@@ -11,7 +11,7 @@ use internal_types::{
     selection::Selection,
 };
 
-use snafu::{ensure, OptionExt, ResultExt, Snafu};
+use snafu::{OptionExt, ResultExt, Snafu};
 
 use arrow::{array::Array, record_batch::RecordBatch};
 use internal_types::write::TableWrite;
@@ -22,13 +22,6 @@ pub enum Error {
     ColumnError {
         column: String,
         source: column::Error,
-    },
-
-    #[snafu(display("Column {} had {} rows, expected {}", column, expected, actual))]
-    IncorrectRowCount {
-        column: String,
-        expected: usize,
-        actual: usize,
     },
 
     #[snafu(display("Internal error: unexpected aggregate request for None aggregate",))]
@@ -129,29 +122,23 @@ impl Table {
 
     /// Validates the schema of the passed in columns, then adds their values to
     /// the associated columns in the table and updates summary statistics.
-    pub fn append<'a>(&mut self, dictionary: &mut Dictionary, write: TableWrite<'a>) -> Result<()> {
-        let columns = write.columns.as_ref();
+    pub fn append<'a>(
+        &mut self,
+        dictionary: &mut Dictionary,
+        write: &TableWrite<'a>,
+    ) -> Result<()> {
         let row_count_before_insert = self.row_count();
-        let additional_rows = columns.first().map(|x| x.row_count).unwrap_or_default();
-        let final_row_count = row_count_before_insert + additional_rows;
+        let mut final_row_count = row_count_before_insert;
 
         // get the column ids and validate schema for those that already exist
-        let column_ids = columns
+        let column_ids = write
+            .columns
             .iter()
-            .map(|column| {
-                ensure!(
-                    column.row_count == additional_rows,
-                    IncorrectRowCount {
-                        column: column.name.as_ref(),
-                        expected: additional_rows,
-                        actual: column.row_count,
-                    }
-                );
-
-                let id = dictionary.lookup_value_or_insert(column.name.as_ref());
+            .map(|(column_name, column)| {
+                let id = dictionary.lookup_value_or_insert(column_name.as_ref());
                 if let Some(c) = self.columns.get(&id) {
                     c.validate_schema(column.influx_type).context(ColumnError {
-                        column: column.name.as_ref(),
+                        column: column_name.as_ref(),
                     })?;
                 }
 
@@ -159,17 +146,17 @@ impl Table {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        for (write, column_id) in columns.into_iter().zip(column_ids.into_iter()) {
+        for ((column_name, write), column_id) in write.columns.iter().zip(column_ids.into_iter()) {
             let column = self
                 .columns
                 .entry(column_id)
                 .or_insert_with(|| Column::new(row_count_before_insert, write.influx_type));
 
-            column.append(&write, dictionary).context(ColumnError {
-                column: write.name.as_ref(),
+            column.append(write, dictionary).context(ColumnError {
+                column: column_name.as_ref(),
             })?;
 
-            assert_eq!(column.len(), final_row_count);
+            final_row_count = final_row_count.max(column.len())
         }
 
         for c in self.columns.values_mut() {
@@ -335,8 +322,8 @@ impl<'a> TableColSelection<'a> {
 mod tests {
     use super::*;
     use arrow::datatypes::DataType as ArrowDataType;
-    use entry::test_helpers::lp_to_entry;
     use internal_types::schema::{InfluxColumnType, InfluxFieldType};
+    use internal_types::write::line_protocol::lp_to_table_writes;
 
     #[test]
     fn table_size() {
@@ -420,33 +407,16 @@ mod tests {
     fn write_columns_validates_schema() {
         let mut dictionary = Dictionary::new();
         let mut table = Table::new(dictionary.lookup_value_or_insert("foo"));
+        let lp_opts = Default::default();
 
         let lp = "foo,t1=asdf iv=1i,uv=1u,fv=1.0,bv=true,sv=\"hi\" 1";
-        let entry = lp_to_entry(&lp);
-        table
-            .append(
-                &mut dictionary,
-                entry.partition_writes().unwrap()[0]
-                    .table_batches()
-                    .first()
-                    .unwrap()
-                    .into(),
-            )
-            .unwrap();
+        let writes = lp_to_table_writes(&lp, &lp_opts).unwrap();
+        table.append(&mut dictionary, &writes["foo"]).unwrap();
 
         let lp = "foo t1=\"string\" 1";
-        let entry = lp_to_entry(&lp);
-        let response = table
-            .append(
-                &mut dictionary,
-                entry.partition_writes().unwrap()[0]
-                    .table_batches()
-                    .first()
-                    .unwrap()
-                    .into(),
-            )
-            .err()
-            .unwrap();
+        let writes = lp_to_table_writes(&lp, &lp_opts).unwrap();
+
+        let response = table.append(&mut dictionary, &writes["foo"]).err().unwrap();
         assert!(
             matches!(
                 &response,
@@ -463,18 +433,8 @@ mod tests {
         );
 
         let lp = "foo iv=1u 1";
-        let entry = lp_to_entry(&lp);
-        let response = table
-            .append(
-                &mut dictionary,
-                entry.partition_writes().unwrap()[0]
-                    .table_batches()
-                    .first()
-                    .unwrap()
-                    .into(),
-            )
-            .err()
-            .unwrap();
+        let writes = lp_to_table_writes(&lp, &lp_opts).unwrap();
+        let response = table.append(&mut dictionary, &writes["foo"]).err().unwrap();
         assert!(
             matches!(
                 &response,
@@ -491,18 +451,8 @@ mod tests {
         );
 
         let lp = "foo fv=1i 1";
-        let entry = lp_to_entry(&lp);
-        let response = table
-            .append(
-                &mut dictionary,
-                entry.partition_writes().unwrap()[0]
-                    .table_batches()
-                    .first()
-                    .unwrap()
-                    .into(),
-            )
-            .err()
-            .unwrap();
+        let writes = lp_to_table_writes(&lp, &lp_opts).unwrap();
+        let response = table.append(&mut dictionary, &writes["foo"]).err().unwrap();
         assert!(
             matches!(
                 &response,
@@ -519,18 +469,8 @@ mod tests {
         );
 
         let lp = "foo bv=1 1";
-        let entry = lp_to_entry(&lp);
-        let response = table
-            .append(
-                &mut dictionary,
-                entry.partition_writes().unwrap()[0]
-                    .table_batches()
-                    .first()
-                    .unwrap()
-                    .into(),
-            )
-            .err()
-            .unwrap();
+        let writes = lp_to_table_writes(&lp, &lp_opts).unwrap();
+        let response = table.append(&mut dictionary, &writes["foo"]).err().unwrap();
         assert!(
             matches!(
                 &response,
@@ -547,18 +487,8 @@ mod tests {
         );
 
         let lp = "foo sv=true 1";
-        let entry = lp_to_entry(&lp);
-        let response = table
-            .append(
-                &mut dictionary,
-                entry.partition_writes().unwrap()[0]
-                    .table_batches()
-                    .first()
-                    .unwrap()
-                    .into(),
-            )
-            .err()
-            .unwrap();
+        let writes = lp_to_table_writes(&lp, &lp_opts).unwrap();
+        let response = table.append(&mut dictionary, &writes["foo"]).err().unwrap();
         assert!(
             matches!(
                 &response,
@@ -575,18 +505,8 @@ mod tests {
         );
 
         let lp = "foo,sv=\"bar\" f=3i 1";
-        let entry = lp_to_entry(&lp);
-        let response = table
-            .append(
-                &mut dictionary,
-                entry.partition_writes().unwrap()[0]
-                    .table_batches()
-                    .first()
-                    .unwrap()
-                    .into(),
-            )
-            .err()
-            .unwrap();
+        let writes = lp_to_table_writes(&lp, &lp_opts).unwrap();
+        let response = table.append(&mut dictionary, &writes["foo"]).err().unwrap();
         assert!(
             matches!(
                 &response,
@@ -606,10 +526,10 @@ mod tests {
     ///  Insert the line protocol lines in `lp_lines` into this table
     fn write_lines_to_table(table: &mut Table, dictionary: &mut Dictionary, lp_lines: Vec<&str>) {
         let lp_data = lp_lines.join("\n");
-        let entry = lp_to_entry(&lp_data);
-
-        for batch in entry.partition_writes().unwrap()[0].table_batches() {
-            table.append(dictionary, batch.into()).unwrap();
-        }
+        lp_to_table_writes(&lp_data, &Default::default())
+            .unwrap()
+            .iter()
+            .try_for_each(|(_, w)| table.append(dictionary, w))
+            .unwrap();
     }
 }

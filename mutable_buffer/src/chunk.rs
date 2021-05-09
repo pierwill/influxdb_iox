@@ -86,18 +86,14 @@ impl Chunk {
         chunk
     }
 
-    pub fn write_table_batch(&mut self, write: TableWrite<'_>) -> Result<()> {
-        let table_id = self
-            .dictionary
-            .lookup_value_or_insert(write.table_name.as_ref())
-            .into();
+    pub fn write_table_batch(&mut self, table_name: &str, write: &TableWrite<'_>) -> Result<()> {
+        let table_id = self.dictionary.lookup_value_or_insert(table_name).into();
 
         let table = self
             .tables
             .entry(table_id)
             .or_insert_with(|| Table::new(table_id));
 
-        let table_name = write.table_name.clone();
         table
             .append(&mut self.dictionary, write)
             .context(TableWriteError { table_name })?;
@@ -234,23 +230,17 @@ impl Chunk {
 }
 
 pub mod test_helpers {
-    use entry::test_helpers::lp_to_entry;
-
     use super::*;
+    use internal_types::write::line_protocol::lp_to_table_writes;
 
     /// A helper that will write line protocol string to the passed in Chunk.
     /// All data will be under a single partition with a clock value and
     /// server id of 1.
     pub fn write_lp_to_chunk(lp: &str, chunk: &mut Chunk) -> Result<()> {
-        let entry = lp_to_entry(lp);
-
-        for w in entry.partition_writes().unwrap() {
-            for batch in w.table_batches() {
-                chunk.write_table_batch(batch.into())?;
-            }
-        }
-
-        Ok(())
+        lp_to_table_writes(lp, &Default::default())
+            .unwrap()
+            .iter()
+            .try_for_each(|(name, w)| chunk.write_table_batch(name, w))
     }
 }
 

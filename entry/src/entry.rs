@@ -172,7 +172,7 @@ fn build_table_write_batch<'a>(
                     .or_insert_with(|| ColumnWriteBuilder::new_tag_column(false, false));
                 builder.null_to_idx(idx);
                 builder
-                    .push_tag(value.as_str())
+                    .push_tag(value.clone().into())
                     .context(TableColumnTypeMismatch {
                         table: table_name,
                         column: key,
@@ -235,7 +235,7 @@ fn build_table_write_batch<'a>(
                         .or_insert_with(|| ColumnWriteBuilder::new_string_column(false, false));
                     builder.null_to_idx(idx);
                     builder
-                        .push_string(v.as_str())
+                        .push_string(v.clone().into())
                         .context(TableColumnTypeMismatch {
                             table: table_name,
                             column: key,
@@ -266,7 +266,7 @@ fn build_table_write_batch<'a>(
 
     let columns = columns
         .into_iter()
-        .map(|(column_name, builder)| build_flatbuffer(builder.build(column_name), fbb))
+        .map(|(column_name, builder)| build_flatbuffer(column_name, builder.build(), fbb))
         .collect::<Vec<_>>();
     let columns = fbb.create_vector(&columns);
 
@@ -495,10 +495,11 @@ impl<'a> Column<'a> {
 }
 
 fn build_flatbuffer<'a>(
+    column_name: &str,
     write: ColumnWrite<'a>,
     fbb: &mut FlatBufferBuilder<'a>,
 ) -> WIPOffset<entry_fb::Column<'a>> {
-    let name = Some(fbb.create_string(write.name.as_ref()));
+    let name = Some(fbb.create_string(column_name));
     let null_mask = if count_set_bits(&write.valid_mask) != write.row_count {
         let mut mask = write.valid_mask.into_owned();
         negate_mask(&mut mask, write.row_count);
@@ -1235,45 +1236,38 @@ mod tests {
         let columns = write.columns;
         assert_eq!(columns.len(), 7);
 
-        let col = &columns[0];
+        let col = &columns["bval"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "bval");
         assert_eq!(&valid, &[true, true]);
         assert_eq!(col.values.bool().unwrap(), &[true, false]);
 
-        let col = &columns[1];
+        let col = &columns["fval"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "fval");
         assert_eq!(&valid, &[true, true]);
         assert_eq!(col.values.f64().unwrap(), &[1.2, 2.2]);
 
-        let col = &columns[2];
+        let col = &columns["host"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "host");
         assert_eq!(&valid, &[true, true]);
         assert_eq!(col.values.string().unwrap(), &["a", "b"]);
 
-        let col = &columns[3];
+        let col = &columns["ival"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "ival");
         assert_eq!(&valid, &[true, true]);
         assert_eq!(col.values.i64().unwrap(), &[23, 22]);
 
-        let col = &columns[4];
+        let col = &columns["sval"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "sval");
         assert_eq!(&valid, &[true, true]);
         assert_eq!(col.values.string().unwrap(), &["hi", "world"]);
 
-        let col = &columns[5];
+        let col = &columns["time"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "time");
         assert_eq!(&valid, &[true, true]);
         assert_eq!(col.values.i64().unwrap(), &[1, 2]);
 
-        let col = &columns[6];
+        let col = &columns["uval"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "uval");
         assert_eq!(&valid, &[true, true]);
         assert_eq!(col.values.u64().unwrap(), &[7, 1]);
     }
@@ -1306,9 +1300,8 @@ mod tests {
         let columns = write.columns;
         assert_eq!(columns.len(), 7);
 
-        let col = &columns[0];
+        let col = &columns["bool"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "bool");
         assert_eq!(
             col.influx_type,
             InfluxColumnType::Field(InfluxFieldType::Boolean)
@@ -1316,23 +1309,20 @@ mod tests {
         assert_eq!(&valid, &[false, false, true]);
         assert_eq!(col.values.bool().unwrap(), &[true]);
 
-        let col = &columns[1];
+        let col = &columns["host"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "host");
         assert_eq!(col.influx_type, InfluxColumnType::Tag);
         assert_eq!(&valid, &[true, true, false]);
         assert_eq!(col.values.string().unwrap(), &["a", "a"]);
 
-        let col = &columns[2];
+        let col = &columns["region"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "region");
         assert_eq!(col.influx_type, InfluxColumnType::Tag);
         assert_eq!(&valid, &[false, true, false]);
         assert_eq!(col.values.string().unwrap(), &["west"]);
 
-        let col = &columns[3];
+        let col = &columns["string"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "string");
         assert_eq!(
             col.influx_type,
             InfluxColumnType::Field(InfluxFieldType::String)
@@ -1340,16 +1330,14 @@ mod tests {
         assert_eq!(&valid, &[false, false, true]);
         assert_eq!(col.values.string().unwrap(), &["hello"]);
 
-        let col = &columns[4];
+        let col = &columns[TIME_COLUMN_NAME];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, TIME_COLUMN_NAME);
         assert_eq!(col.influx_type, InfluxColumnType::Timestamp);
         assert_eq!(&valid, &[true, true, true]);
         assert_eq!(col.values.i64().unwrap(), &[983, 2343, 222]);
 
-        let col = &columns[5];
+        let col = &columns["val"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "val");
         assert_eq!(
             col.influx_type,
             InfluxColumnType::Field(InfluxFieldType::Integer)
@@ -1357,9 +1345,8 @@ mod tests {
         assert_eq!(&valid, &[true, false, true]);
         assert_eq!(col.values.i64().unwrap(), &[23, 21]);
 
-        let col = &columns[6];
+        let col = &columns["val2"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "val2");
         assert_eq!(
             col.influx_type,
             InfluxColumnType::Field(InfluxFieldType::Float)
@@ -1385,8 +1372,7 @@ mod tests {
         assert_eq!(table_batch.row_count(), 1);
         let table: TableWrite = table_batch.into();
 
-        let col = &table.columns[1];
-        assert_eq!(col.name, "val");
+        let col = &table.columns["val"];
         assert_eq!(col.values.i64().unwrap(), &[1]);
 
         let lp = vec![
@@ -1414,9 +1400,8 @@ mod tests {
         assert_eq!(table_batch.row_count(), 8);
         let table: TableWrite = table_batch.into();
 
-        let col = &table.columns[1];
+        let col = &table.columns["val"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "val");
         assert_eq!(col.values.i64().unwrap(), &[1, 1, 1, 1, 1, 1, 1]);
         assert_eq!(&valid, &[true, true, true, true, true, true, false, true]);
 
@@ -1446,9 +1431,8 @@ mod tests {
         assert_eq!(table_batch.row_count(), 9);
         let table: TableWrite = table_batch.into();
 
-        let col = &table.columns[1];
+        let col = &table.columns["val"];
         let valid = iter_bits(&col.valid_mask, col.row_count).collect::<Vec<_>>();
-        assert_eq!(col.name, "val");
         assert_eq!(col.values.i64().unwrap(), &[1, 1, 1, 1, 1, 1, 1, 1]);
         assert_eq!(
             &valid,
@@ -1476,8 +1460,7 @@ mod tests {
         assert_eq!(table_batch.row_count(), 2);
         let table: TableWrite = table_batch.into();
 
-        let col = &table.columns[0];
-        assert_eq!(col.name, TIME_COLUMN_NAME);
+        let col = &table.columns[TIME_COLUMN_NAME];
         let values = col.values.i64().unwrap();
         assert!(values[0] > t);
         assert_eq!(values[1], 123);

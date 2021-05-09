@@ -1,23 +1,19 @@
 //! A generic representation of columnar data that is agnostic to the underlying representation
 
 use crate::schema::InfluxColumnType;
+use hashbrown::HashMap;
 use std::borrow::Cow;
 
 pub mod builder;
-
-/// A newtype that allows implementing FromIterator
-#[derive(Debug, Clone)]
-pub struct CollectedTableWrites<'a>(pub Vec<TableWrite<'a>>);
+pub mod line_protocol;
 
 #[derive(Debug, Clone)]
 pub struct TableWrite<'a> {
-    pub table_name: Cow<'a, str>,
-    pub columns: Cow<'a, [ColumnWrite<'a>]>,
+    pub columns: HashMap<Cow<'a, str>, ColumnWrite<'a>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ColumnWrite<'a> {
-    pub name: Cow<'a, str>,
     pub row_count: usize,
     pub influx_type: InfluxColumnType,
     pub valid_mask: Cow<'a, [u8]>,
@@ -29,7 +25,7 @@ pub enum ColumnWriteValues<'a> {
     F64(Cow<'a, [f64]>),
     I64(Cow<'a, [i64]>),
     U64(Cow<'a, [u64]>),
-    String(Cow<'a, [&'a str]>),
+    String(Cow<'a, [Cow<'a, str>]>),
     PackedString(PackedStrings<'a>),
     Dictionary(Dictionary<'a>),
     PackedBool(Cow<'a, [u8]>),
@@ -58,7 +54,7 @@ impl<'a> ColumnWriteValues<'a> {
         }
     }
 
-    pub fn string(&self) -> Option<&[&'a str]> {
+    pub fn string(&self) -> Option<&[Cow<'a, str>]> {
         match &self {
             Self::String(data) => Some(data.as_ref()),
             _ => None,

@@ -6,6 +6,7 @@ use arrow_util::string::PackedStringArray;
 
 use crate::schema::{InfluxColumnType, InfluxFieldType};
 use crate::write::{ColumnWrite, ColumnWriteValues, Dictionary, PackedStrings};
+use std::borrow::Cow;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -100,14 +101,14 @@ impl<'a> ColumnWriteBuilder<'a> {
         }
     }
 
-    pub fn push_tag(&mut self, value: &'a str) -> Result<()> {
+    pub fn push_tag(&mut self, value: Cow<'a, str>) -> Result<()> {
         self.verify_type(InfluxColumnType::Tag)?;
         self.values.push_str(value)?;
         self.valid_mask.push(true);
         Ok(())
     }
 
-    pub fn push_string(&mut self, value: &'a str) -> Result<()> {
+    pub fn push_string(&mut self, value: Cow<'a, str>) -> Result<()> {
         self.verify_type(InfluxColumnType::Field(InfluxFieldType::String))?;
         self.values.push_str(value)?;
         self.valid_mask.push(true);
@@ -160,9 +161,8 @@ impl<'a> ColumnWriteBuilder<'a> {
         Ok(())
     }
 
-    pub fn build(self, name: impl Into<std::borrow::Cow<'a, str>>) -> ColumnWrite<'a> {
+    pub fn build(self) -> ColumnWrite<'a> {
         ColumnWrite {
-            name: name.into(),
             row_count: self.valid_mask.len(),
             influx_type: self.influx_type,
             valid_mask: self.valid_mask.take_bytes().into(),
@@ -176,7 +176,7 @@ enum ColumnValues<'a> {
     F64(Vec<f64>),
     I64(Vec<i64>),
     U64(Vec<u64>),
-    String(Vec<&'a str>),
+    String(Vec<Cow<'a, str>>),
     PackedString(PackedStringArray<u16>),
     Dictionary(StringDictionary<u16>, Vec<u16>),
     PackedBool(BitSet),
@@ -222,16 +222,16 @@ impl<'a> ColumnValues<'a> {
         }
     }
 
-    fn push_str(&mut self, value: &'a str) -> Result<()> {
+    fn push_str(&mut self, value: Cow<'a, str>) -> Result<()> {
         match self {
             ColumnValues::String(data) => {
                 data.push(value);
             }
             ColumnValues::PackedString(data) => {
-                data.append(value);
+                data.append(value.as_ref());
             }
             ColumnValues::Dictionary(dictionary, values) => {
-                let id = dictionary.lookup_value_or_insert(value);
+                let id = dictionary.lookup_value_or_insert(value.as_ref());
                 values.push(id);
             }
             _ => PhysicalTypeMismatch {
@@ -282,6 +282,7 @@ impl<'a> ColumnValues<'a> {
     fn push_bool(&mut self, value: bool) -> Result<()> {
         match self {
             ColumnValues::Bool(data) => data.push(value),
+            ColumnValues::PackedBool(data) => data.push(value),
             _ => PhysicalTypeMismatch {
                 new: "bool",
                 expected: self.type_description(),

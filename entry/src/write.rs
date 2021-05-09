@@ -11,13 +11,14 @@ impl<'a> From<entry::TableBatch<'a>> for TableWrite<'a> {
 impl<'a> From<&entry::TableBatch<'a>> for TableWrite<'a> {
     fn from(batch: &entry::TableBatch<'a>) -> Self {
         Self {
-            table_name: batch.name().into(),
             columns: batch
                 .columns()
                 .into_iter()
-                .map(Into::into)
-                .collect::<Vec<_>>()
-                .into(),
+                .map(|batch| {
+                    let column = batch.name().into();
+                    (column, batch.into())
+                })
+                .collect(),
         }
     }
 }
@@ -81,7 +82,6 @@ impl<'a> From<entry::Column<'a>> for ColumnWrite<'a> {
         };
 
         Self {
-            name: batch.name().into(),
             row_count: batch.row_count,
             influx_type: batch.influx_type(),
             valid_mask: construct_valid_mask(batch.inner().null_mask(), batch.row_count).into(),
