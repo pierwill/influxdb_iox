@@ -493,6 +493,18 @@ impl<'a> From<EscapedStr<'a>> for Cow<'a, str> {
     }
 }
 
+impl<'a, 'b> From<&'b EscapedStr<'a>> for Cow<'a, str>
+where
+    'a: 'b,
+{
+    fn from(other: &'b EscapedStr<'a>) -> Self {
+        match other {
+            EscapedStr::SingleSlice(s) => Self::Borrowed(s),
+            EscapedStr::CopiedValue(s) => Self::Owned(s.clone()),
+        }
+    }
+}
+
 impl From<&EscapedStr<'_>> for String {
     fn from(other: &EscapedStr<'_>) -> Self {
         other.to_string()

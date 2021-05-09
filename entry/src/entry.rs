@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 use std::{
-    collections::BTreeMap,
     convert::{TryFrom, TryInto},
     num::NonZeroU64,
 };
@@ -17,13 +16,15 @@ use data_types::{
     database_rules::{Error as DataError, Partitioner, ShardId, Sharder},
     server_id::ServerId,
 };
-use influxdb_line_protocol::{FieldValue, ParsedLine};
-use internal_types::schema::{InfluxColumnType, InfluxFieldType, TIME_COLUMN_NAME};
-use internal_types::write::builder::ColumnWriteBuilder;
-use internal_types::write::{ColumnWrite, ColumnWriteValues};
+use influxdb_line_protocol::ParsedLine;
+use internal_types::schema::{InfluxColumnType, InfluxFieldType};
+use internal_types::write::{ColumnWrite, ColumnWriteValues, TableWrite};
 
 use crate::entry_fb;
 use arrow_util::bitset::{count_set_bits, negate_mask};
+use hashbrown::HashMap;
+use internal_types::write::line_protocol::{lines_to_table_writes, Error as LinesError, Options};
+use std::borrow::Cow;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -32,6 +33,12 @@ pub enum Error {
 
     #[snafu(display("Error getting shard id {}", source))]
     GeneratingShardId { source: DataError },
+
+    #[snafu(display("Error adding data to column {} on line {}", source, line_number))]
+    ColumnError {
+        line_number: usize,
+        source: internal_types::write::builder::Error,
+    },
 
     #[snafu(display(
         "table {} has column {} {} with new data on line {}",
@@ -61,51 +68,62 @@ pub fn lines_to_sharded_entries<'a>(
     partitioner: &impl Partitioner,
 ) -> Result<Vec<ShardedEntry>> {
     let default_time = Utc::now();
-    let mut sharded_lines = BTreeMap::new();
+    let options = Options {
+        default_time: default_time.timestamp_nanos(),
+        ..Default::default()
+    };
 
-    for line in lines {
-        let shard_id = match &sharder {
-            Some(s) => Some(s.shard(line).context(GeneratingShardId)?),
-            None => None,
-        };
-        let partition_key = partitioner
-            .partition_key(line, &default_time)
+    let lines = lines.into_iter().map(|line| -> Result<_> {
+        let shard = sharder
+            .map(|sharder| sharder.shard(&line).context(GeneratingShardId))
+            .transpose()?;
+        let partition = partitioner
+            .partition_key(&line, &default_time)
             .context(GeneratingPartitionKey)?;
-        let table = line.series.measurement.as_str();
+        Ok(((shard, partition), line))
+    });
 
-        sharded_lines
-            .entry(shard_id)
-            .or_insert_with(BTreeMap::new)
-            .entry(partition_key)
-            .or_insert_with(BTreeMap::new)
-            .entry(table)
-            .or_insert_with(Vec::new)
-            .push(line);
+    let data = match lines_to_table_writes(lines, &options) {
+        Ok(data) => data,
+        Err(LinesError::ParseError { source, .. }) => return Err(source),
+        Err(LinesError::ColumnError {
+            line_number,
+            source,
+        }) => {
+            return Err(Error::ColumnError {
+                line_number,
+                source,
+            })
+        }
+    };
+
+    // This shenanigans is temporary, sharding will soon be handled a level above in the server
+    let mut shards: HashMap<_, HashMap<_, _>> = HashMap::new();
+    for ((shard, partition_key), tables) in data {
+        let t = shards.entry(shard).or_default();
+        let ret = t.insert(partition_key, tables);
+        assert!(ret.is_none(), "hashmap contained duplicates!")
     }
 
-    let default_time = Utc::now();
-
-    let sharded_entries = sharded_lines
+    Ok(shards
         .into_iter()
-        .map(|(shard_id, partitions)| build_sharded_entry(shard_id, partitions, &default_time))
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(sharded_entries)
+        .map(|(shard_id, partitioned)| {
+            let entry = partitioned_writes_to_entry(partitioned);
+            ShardedEntry { shard_id, entry }
+        })
+        .collect())
 }
 
-fn build_sharded_entry(
-    shard_id: Option<ShardId>,
-    partitions: BTreeMap<String, BTreeMap<&str, Vec<&ParsedLine<'_>>>>,
-    default_time: &DateTime<Utc>,
-) -> Result<ShardedEntry> {
+pub fn partitioned_writes_to_entry<'a>(
+    partitions: HashMap<String, HashMap<Cow<'a, str>, TableWrite<'a>>>,
+) -> Entry {
     let mut fbb = flatbuffers::FlatBufferBuilder::new_with_capacity(1024);
 
     let partition_writes = partitions
         .into_iter()
-        .map(|(partition_key, tables)| {
-            build_partition_write(&mut fbb, partition_key, tables, default_time)
-        })
-        .collect::<Result<Vec<_>>>()?;
+        .map(|(partition_key, tables)| build_partition_write(&mut fbb, partition_key, tables))
+        .collect::<Vec<_>>();
+
     let partition_writes = fbb.create_vector(&partition_writes);
 
     let write_operations = entry_fb::WriteOperations::create(
@@ -125,160 +143,51 @@ fn build_sharded_entry(
     fbb.finish(entry, None);
 
     let (mut data, idx) = fbb.collapse();
-    let entry = Entry::try_from(data.split_off(idx))
-        .expect("Flatbuffer data just constructed should be valid");
-
-    Ok(ShardedEntry { shard_id, entry })
+    Entry::try_from(data.split_off(idx)).expect("Flatbuffer data just constructed should be valid")
 }
 
 fn build_partition_write<'a>(
     fbb: &mut FlatBufferBuilder<'a>,
     partition_key: String,
-    tables: BTreeMap<&str, Vec<&'a ParsedLine<'_>>>,
-    default_time: &DateTime<Utc>,
-) -> Result<flatbuffers::WIPOffset<entry_fb::PartitionWrite<'a>>> {
+    tables: HashMap<Cow<'a, str>, TableWrite<'a>>,
+) -> flatbuffers::WIPOffset<entry_fb::PartitionWrite<'a>> {
     let partition_key = fbb.create_string(&partition_key);
-
     let table_batches = tables
         .into_iter()
-        .map(|(table_name, lines)| build_table_write_batch(fbb, table_name, lines, default_time))
-        .collect::<Result<Vec<_>>>()?;
-    let table_batches = fbb.create_vector(&table_batches);
+        .map(|(table_name, write)| build_table_write_batch(fbb, table_name.as_ref(), write))
+        .collect::<Vec<_>>();
 
-    Ok(entry_fb::PartitionWrite::create(
+    let table_batches = fbb.create_vector(&table_batches);
+    entry_fb::PartitionWrite::create(
         fbb,
         &entry_fb::PartitionWriteArgs {
             key: Some(partition_key),
             table_batches: Some(table_batches),
         },
-    ))
+    )
 }
 
 fn build_table_write_batch<'a>(
     fbb: &mut FlatBufferBuilder<'a>,
     table_name: &str,
-    lines: Vec<&'a ParsedLine<'_>>,
-    default_time: &DateTime<Utc>,
-) -> Result<flatbuffers::WIPOffset<entry_fb::TableWriteBatch<'a>>> {
-    let mut columns = BTreeMap::new();
-    for (idx, line) in lines.iter().enumerate() {
-        let line_number = idx + 1;
-
-        if let Some(tagset) = &line.series.tag_set {
-            for (key, value) in tagset {
-                let key = key.as_str();
-                let builder = columns
-                    .entry(key)
-                    .or_insert_with(|| ColumnWriteBuilder::new_tag_column(false, false));
-                builder.null_to_idx(idx);
-                builder
-                    .push_tag(value.clone().into())
-                    .context(TableColumnTypeMismatch {
-                        table: table_name,
-                        column: key,
-                        line_number,
-                    })?;
-            }
-        }
-
-        for (key, val) in &line.field_set {
-            let key = key.as_str();
-
-            match val {
-                FieldValue::Boolean(b) => {
-                    let builder = columns
-                        .entry(key)
-                        .or_insert_with(|| ColumnWriteBuilder::new_bool_column(false));
-                    builder.null_to_idx(idx);
-                    builder.push_bool(*b).context(TableColumnTypeMismatch {
-                        table: table_name,
-                        column: key,
-                        line_number,
-                    })?;
-                }
-                FieldValue::U64(v) => {
-                    let builder = columns
-                        .entry(key)
-                        .or_insert_with(ColumnWriteBuilder::new_u64_column);
-                    builder.null_to_idx(idx);
-                    builder.push_u64(*v).context(TableColumnTypeMismatch {
-                        table: table_name,
-                        column: key,
-                        line_number,
-                    })?;
-                }
-                FieldValue::F64(v) => {
-                    let builder = columns
-                        .entry(key)
-                        .or_insert_with(ColumnWriteBuilder::new_f64_column);
-                    builder.null_to_idx(idx);
-                    builder.push_f64(*v).context(TableColumnTypeMismatch {
-                        table: table_name,
-                        column: key,
-                        line_number,
-                    })?;
-                }
-                FieldValue::I64(v) => {
-                    let builder = columns
-                        .entry(key)
-                        .or_insert_with(ColumnWriteBuilder::new_i64_column);
-                    builder.null_to_idx(idx);
-                    builder.push_i64(*v).context(TableColumnTypeMismatch {
-                        table: table_name,
-                        column: key,
-                        line_number,
-                    })?;
-                }
-                FieldValue::String(v) => {
-                    let builder = columns
-                        .entry(key)
-                        .or_insert_with(|| ColumnWriteBuilder::new_string_column(false, false));
-                    builder.null_to_idx(idx);
-                    builder
-                        .push_string(v.clone().into())
-                        .context(TableColumnTypeMismatch {
-                            table: table_name,
-                            column: key,
-                            line_number,
-                        })?;
-                }
-            }
-        }
-
-        let builder = columns
-            .entry(TIME_COLUMN_NAME)
-            .or_insert_with(ColumnWriteBuilder::new_time_column);
-        builder
-            .push_time(
-                line.timestamp
-                    .unwrap_or_else(|| default_time.timestamp_nanos()),
-            )
-            .context(TableColumnTypeMismatch {
-                table: table_name,
-                column: TIME_COLUMN_NAME,
-                line_number,
-            })?;
-
-        for b in columns.values_mut() {
-            b.null_to_idx(idx + 1);
-        }
-    }
-
-    let columns = columns
+    write: TableWrite<'a>,
+) -> flatbuffers::WIPOffset<entry_fb::TableWriteBatch<'a>> {
+    let columns = write
+        .columns
         .into_iter()
-        .map(|(column_name, builder)| build_flatbuffer(column_name, builder.build(), fbb))
+        .map(|(column_name, write)| build_flatbuffer(column_name.as_ref(), write, fbb))
         .collect::<Vec<_>>();
     let columns = fbb.create_vector(&columns);
 
     let table_name = fbb.create_string(table_name);
 
-    Ok(entry_fb::TableWriteBatch::create(
+    entry_fb::TableWriteBatch::create(
         fbb,
         &entry_fb::TableWriteBatchArgs {
             name: Some(table_name),
             columns: Some(columns),
         },
-    ))
+    )
 }
 
 /// Holds a shard id to the associated entry. If there is no ShardId, then
@@ -987,6 +896,18 @@ pub mod test_helpers {
             .collect::<Vec<_>>()
     }
 
+    /// Sequences a given entry
+    pub fn sequence_entry(
+        server_id: u32,
+        clock_value: u64,
+        entry: &Entry
+    ) -> OwnedSequencedEntry {
+        let server_id = ServerId::try_from(server_id).unwrap();
+        let clock_value = ClockValue::try_from(clock_value).unwrap();
+
+        OwnedSequencedEntry::new_from_entry_bytes(clock_value, server_id, entry.data()).unwrap()
+    }
+
     /// Converts the line protocol to a `SequencedEntry` with the given server id
     /// and clock value
     pub fn lp_to_sequenced_entry(
@@ -994,11 +915,7 @@ pub mod test_helpers {
         server_id: u32,
         clock_value: u64,
     ) -> OwnedSequencedEntry {
-        let entry = lp_to_entry(lp);
-        let server_id = ServerId::try_from(server_id).unwrap();
-        let clock_value = ClockValue::try_from(clock_value).unwrap();
-
-        OwnedSequencedEntry::new_from_entry_bytes(clock_value, server_id, entry.data()).unwrap()
+        sequence_entry(server_id, clock_value, &lp_to_entry(lp))
     }
 
     /// Returns a test sharder that will assign shard ids from [0, count)
@@ -1092,6 +1009,7 @@ mod tests {
 
     use super::test_helpers::*;
     use super::*;
+    use internal_types::schema::TIME_COLUMN_NAME;
 
     #[test]
     fn shards_lines() {
@@ -1103,8 +1021,9 @@ mod tests {
         .join("\n");
         let lines: Vec<_> = parse_lines(&lp).map(|l| l.unwrap()).collect();
 
-        let sharded_entries =
+        let mut sharded_entries =
             lines_to_sharded_entries(&lines, sharder(2).as_ref(), &partitioner(1)).unwrap();
+        sharded_entries.sort_by(|a, b| a.shard_id.cmp(&b.shard_id));
 
         assert_eq!(sharded_entries.len(), 2);
         assert_eq!(sharded_entries[0].shard_id, Some(0));
@@ -1141,7 +1060,8 @@ mod tests {
         let sharded_entries =
             lines_to_sharded_entries(&lines, sharder(1).as_ref(), &partitioner(2)).unwrap();
 
-        let partition_writes = sharded_entries[0].entry.partition_writes().unwrap();
+        let mut partition_writes = sharded_entries[0].entry.partition_writes().unwrap();
+        partition_writes.sort_by(|a, b| a.key().cmp(b.key()));
         assert_eq!(partition_writes.len(), 2);
         assert_eq!(partition_writes[0].key(), "key_0");
         assert_eq!(partition_writes[1].key(), "key_1");
@@ -1163,7 +1083,8 @@ mod tests {
             lines_to_sharded_entries(&lines, sharder(1).as_ref(), &partitioner(1)).unwrap();
 
         let partition_writes = sharded_entries[0].entry.partition_writes().unwrap();
-        let table_batches = partition_writes[0].table_batches();
+        let mut table_batches = partition_writes[0].table_batches();
+        table_batches.sort_by(|a, b| a.name().cmp(b.name()));
 
         assert_eq!(table_batches.len(), 3);
         assert_eq!(table_batches[0].name(), "cpu");
@@ -1183,7 +1104,8 @@ mod tests {
         let table_batches = partition_writes[0].table_batches();
         let batch = &table_batches[0];
 
-        let columns = batch.columns();
+        let mut columns = batch.columns();
+        columns.sort_by(|a, b| a.name().cmp(b.name()));
 
         assert_eq!(columns.len(), 5);
 

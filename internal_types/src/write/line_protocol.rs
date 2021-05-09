@@ -12,12 +12,9 @@ use crate::write::builder::ColumnWriteBuilder;
 use crate::write::TableWrite;
 
 #[derive(Debug, Snafu)]
-pub enum Error {
+pub enum Error<E: std::error::Error + Sized + 'static> {
     #[snafu(display("Parse error at line {}: {}", line_number, source))]
-    ParseError {
-        line_number: usize,
-        source: influxdb_line_protocol::Error,
-    },
+    ParseError { line_number: usize, source: E },
 
     #[snafu(display("Column error at line {}: {}", line_number, source))]
     ColumnError {
@@ -25,8 +22,6 @@ pub enum Error {
         source: crate::write::builder::Error,
     },
 }
-
-pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug)]
 pub struct Options {
@@ -54,23 +49,36 @@ impl Default for Options {
 pub fn lp_to_table_writes<'a>(
     lp: &'a str,
     options: &Options,
-) -> Result<HashMap<Cow<'a, str>, TableWrite<'a>>> {
+) -> Result<HashMap<Cow<'a, str>, TableWrite<'a>>, Error<influxdb_line_protocol::Error>> {
+    let collected = parse_lines(lp)
+        .enumerate()
+        .map(|(idx, res)| {
+            let line = res.context(ParseError {
+                line_number: idx + 1,
+            })?;
+            Ok(line)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let mut partitioned = lines_to_table_writes(
-        parse_lines(lp)
-            .into_iter()
-            .map(|result| result.map(|line| ((), line))),
+        collected
+            .iter()
+            .map(|line| Ok::<_, influxdb_line_protocol::Error>(((), line))),
         options,
     )?;
+
     Ok(partitioned.remove(&()).unwrap())
 }
 
-pub fn lines_to_table_writes<'a, K, I>(
+pub fn lines_to_table_writes<'a, 'b, K, I, E>(
     lines: I,
     options: &Options,
-) -> Result<HashMap<K, HashMap<Cow<'a, str>, TableWrite<'a>>>>
+) -> Result<HashMap<K, HashMap<Cow<'a, str>, TableWrite<'a>>>, Error<E>>
 where
+    'a: 'b,
     K: 'a + PartialEq + Eq + Hash,
-    I: Iterator<Item = Result<(K, ParsedLine<'a>), influxdb_line_protocol::Error>>,
+    I: Iterator<Item = Result<(K, &'b ParsedLine<'a>), E>>,
+    E: std::error::Error + Send + Sync + 'static,
 {
     let mut partitioned_builders: HashMap<
         K,
@@ -83,13 +91,20 @@ where
         })?;
 
         let builders = partitioned_builders.entry(key).or_default();
-        let (rows, table) = builders.entry(line.series.measurement.into()).or_default();
+        let (rows, table) = builders
+            .entry((&line.series.measurement).into())
+            .or_default();
+        let start_rows = *rows;
         *rows += 1;
 
-        if let Some(tagset) = line.series.tag_set {
+        if let Some(tagset) = &line.series.tag_set {
             for (key, value) in tagset {
                 let builder = table.entry(key.into()).or_insert_with(|| {
-                    ColumnWriteBuilder::new_tag_column(options.tag_dictionary, options.tag_packed)
+                    ColumnWriteBuilder::new_tag_column(
+                        options.tag_dictionary,
+                        options.tag_packed,
+                        start_rows,
+                    )
                 });
                 builder.push_tag(value.into()).context(ColumnError {
                     line_number: idx + 1,
@@ -97,29 +112,29 @@ where
             }
         }
 
-        for (key, value) in line.field_set {
+        for (key, value) in &line.field_set {
             match value {
                 FieldValue::I64(data) => {
                     let builder = table
                         .entry(key.into())
-                        .or_insert_with(|| ColumnWriteBuilder::new_i64_column());
-                    builder.push_i64(data).context(ColumnError {
+                        .or_insert_with(|| ColumnWriteBuilder::new_i64_column(start_rows));
+                    builder.push_i64(*data).context(ColumnError {
                         line_number: idx + 1,
                     })?;
                 }
                 FieldValue::U64(data) => {
                     let builder = table
                         .entry(key.into())
-                        .or_insert_with(|| ColumnWriteBuilder::new_u64_column());
-                    builder.push_u64(data).context(ColumnError {
+                        .or_insert_with(|| ColumnWriteBuilder::new_u64_column(start_rows));
+                    builder.push_u64(*data).context(ColumnError {
                         line_number: idx + 1,
                     })?;
                 }
                 FieldValue::F64(data) => {
                     let builder = table
                         .entry(key.into())
-                        .or_insert_with(|| ColumnWriteBuilder::new_f64_column());
-                    builder.push_f64(data).context(ColumnError {
+                        .or_insert_with(|| ColumnWriteBuilder::new_f64_column(start_rows));
+                    builder.push_f64(*data).context(ColumnError {
                         line_number: idx + 1,
                     })?;
                 }
@@ -128,6 +143,7 @@ where
                         ColumnWriteBuilder::new_string_column(
                             options.string_dictionary,
                             options.string_packed,
+                            start_rows,
                         )
                     });
                     builder.push_string(data.into()).context(ColumnError {
@@ -136,9 +152,9 @@ where
                 }
                 FieldValue::Boolean(data) => {
                     let builder = table.entry(key.into()).or_insert_with(|| {
-                        ColumnWriteBuilder::new_bool_column(options.bool_packed)
+                        ColumnWriteBuilder::new_bool_column(options.bool_packed, start_rows)
                     });
-                    builder.push_bool(data).context(ColumnError {
+                    builder.push_bool(*data).context(ColumnError {
                         line_number: idx + 1,
                     })?;
                 }
@@ -147,7 +163,7 @@ where
 
         let builder = table
             .entry(TIME_COLUMN_NAME.into())
-            .or_insert_with(|| ColumnWriteBuilder::new_time_column());
+            .or_insert_with(|| ColumnWriteBuilder::new_time_column(start_rows));
 
         builder
             .push_time(line.timestamp.unwrap_or_else(|| options.default_time))
@@ -393,14 +409,14 @@ mod tests {
             ..Default::default()
         };
 
-        let writes = lines_to_table_writes::<Cow<'_, str>, _>(
-            parse_lines(lp).map(|result| {
-                result.map(|line| {
-                    (
-                        line.series.tag_set.as_ref().unwrap()[0].1.clone().into(),
-                        line,
-                    )
-                })
+        let lines = parse_lines(lp).collect::<Result<Vec<_>, _>>().unwrap();
+
+        let writes = lines_to_table_writes::<Cow<'_, str>, _, _>(
+            lines.iter().map(|line| {
+                Ok::<_, std::convert::Infallible>((
+                    line.series.tag_set.as_ref().unwrap()[0].1.clone().into(),
+                    line,
+                ))
             }),
             &options,
         )

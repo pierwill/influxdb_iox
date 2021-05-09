@@ -33,31 +33,31 @@ pub struct ColumnWriteBuilder<'a> {
 }
 
 impl<'a> ColumnWriteBuilder<'a> {
-    pub fn new_tag_column(dictionary: bool, packed: bool) -> Self {
+    pub fn new_tag_column(dictionary: bool, packed: bool, initial_nulls: usize) -> Self {
         Self {
             influx_type: InfluxColumnType::Tag,
-            valid_mask: BitSet::new(),
+            valid_mask: BitSet::new_with_unset(initial_nulls),
             values: ColumnValues::new_str(dictionary, packed),
         }
     }
 
-    pub fn new_string_column(dictionary: bool, packed: bool) -> Self {
+    pub fn new_string_column(dictionary: bool, packed: bool, initial_nulls: usize) -> Self {
         Self {
             influx_type: InfluxColumnType::Field(InfluxFieldType::String),
-            valid_mask: BitSet::new(),
+            valid_mask: BitSet::new_with_unset(initial_nulls),
             values: ColumnValues::new_str(dictionary, packed),
         }
     }
 
-    pub fn new_time_column() -> Self {
+    pub fn new_time_column(initial_nulls: usize) -> Self {
         Self {
             influx_type: InfluxColumnType::Timestamp,
-            valid_mask: BitSet::new(),
+            valid_mask: BitSet::new_with_unset(initial_nulls),
             values: ColumnValues::I64(Vec::new()),
         }
     }
 
-    pub fn new_bool_column(packed: bool) -> Self {
+    pub fn new_bool_column(packed: bool, initial_nulls: usize) -> Self {
         let values = match packed {
             true => ColumnValues::PackedBool(BitSet::new()),
             false => ColumnValues::Bool(Vec::new()),
@@ -65,39 +65,39 @@ impl<'a> ColumnWriteBuilder<'a> {
 
         Self {
             influx_type: InfluxColumnType::Field(InfluxFieldType::Boolean),
-            valid_mask: BitSet::new(),
+            valid_mask: BitSet::new_with_unset(initial_nulls),
             values,
         }
     }
 
-    pub fn new_u64_column() -> Self {
+    pub fn new_u64_column(initial_nulls: usize) -> Self {
         Self {
             influx_type: InfluxColumnType::Field(InfluxFieldType::UInteger),
-            valid_mask: BitSet::new(),
+            valid_mask: BitSet::new_with_unset(initial_nulls),
             values: ColumnValues::U64(Vec::new()),
         }
     }
 
-    pub fn new_f64_column() -> Self {
+    pub fn new_f64_column(initial_nulls: usize) -> Self {
         Self {
             influx_type: InfluxColumnType::Field(InfluxFieldType::Float),
-            valid_mask: BitSet::new(),
+            valid_mask: BitSet::new_with_unset(initial_nulls),
             values: ColumnValues::F64(Vec::new()),
         }
     }
 
-    pub fn new_i64_column() -> Self {
+    pub fn new_i64_column(initial_nulls: usize) -> Self {
         Self {
             influx_type: InfluxColumnType::Field(InfluxFieldType::Integer),
-            valid_mask: BitSet::new(),
+            valid_mask: BitSet::new_with_unset(initial_nulls),
             values: ColumnValues::I64(Vec::new()),
         }
     }
 
     // ensures there are at least as many rows (or nulls) to idx
     pub fn null_to_idx(&mut self, idx: usize) {
-        for _ in self.valid_mask.len()..idx {
-            self.valid_mask.push(false)
+        if idx > self.valid_mask.len() {
+            self.valid_mask.append_unset(idx - self.valid_mask.len())
         }
     }
 

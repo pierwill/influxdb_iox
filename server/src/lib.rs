@@ -1306,14 +1306,20 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
 
-        let err = server.write_lines(&db_name, lines.clone()).await.unwrap_err();
+        let err = server
+            .write_lines(&db_name, lines.clone())
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, Error::NoRemoteConfigured { node_group } if node_group == remote_ids)
         );
 
         // one remote is configured but it's down and we'll get connection error
         server.update_remote(bad_remote_id, BAD_REMOTE_ADDR.into());
-        let err = server.write_lines(&db_name, lines.clone()).await.unwrap_err();
+        let err = server
+            .write_lines(&db_name, lines.clone())
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             Error::NoRemoteReachable { errors } if matches!(
