@@ -1591,7 +1591,7 @@ version = "0.1.0"
 dependencies = [
  "nom",
  "observability_deps",
- "smallvec",
+ "ouroboros",
  "snafu",
  "test_helpers",
 ]

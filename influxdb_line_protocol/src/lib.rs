@@ -17,6 +17,16 @@
 )]
 
 use fmt::Display;
+use std::cmp::Ordering;
+use std::sync::Arc;
+use std::{
+    borrow::Cow,
+    char,
+    collections::{btree_map::Entry, BTreeMap},
+    fmt,
+    ops::Deref,
+};
+
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
@@ -25,17 +35,10 @@ use nom::{
     multi::many0,
     sequence::{preceded, separated_pair, terminated, tuple},
 };
-use observability_deps::tracing::debug;
-use smallvec::SmallVec;
+use ouroboros::self_referencing;
 use snafu::{ResultExt, Snafu};
-use std::cmp::Ordering;
-use std::{
-    borrow::Cow,
-    char,
-    collections::{btree_map::Entry, BTreeMap},
-    fmt,
-    ops::Deref,
-};
+
+use observability_deps::tracing::debug;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -228,6 +231,30 @@ impl<'a> Display for ParsedLine<'a> {
     }
 }
 
+/// A `ParsedLine` that owns its data
+#[self_referencing]
+pub struct StaticParsedLine {
+    data: Arc<str>,
+
+    #[borrows(data)]
+    #[covariant]
+    line: ParsedLine<'this>,
+}
+
+impl StaticParsedLine {
+    pub fn from_str(data: Arc<str>, start: usize, end: usize) -> Result<Self, Error> {
+        StaticParsedLineTryBuilder {
+            data,
+            line_builder: |line| parse_full_line(&line[start..end]),
+        }
+        .try_build()
+    }
+
+    pub fn inner(&self) -> &ParsedLine<'_> {
+        self.borrow_line()
+    }
+}
+
 /// Represents the identifier of a series (measurement, tagset) for
 /// line protocol data
 #[derive(Debug)]
@@ -328,8 +355,11 @@ impl<'a> Series<'a> {
     }
 }
 
-pub type FieldSet<'a> = SmallVec<[(EscapedStr<'a>, FieldValue<'a>); 4]>;
-pub type TagSet<'a> = SmallVec<[(EscapedStr<'a>, EscapedStr<'a>); 8]>;
+// Previously used SmallVec but it has covariance issues
+// that prevent usage with ouroboros
+// - https://github.com/servo/rust-smallvec/issues/217
+pub type FieldSet<'a> = Vec<(EscapedStr<'a>, FieldValue<'a>)>;
+pub type TagSet<'a> = Vec<(EscapedStr<'a>, EscapedStr<'a>)>;
 
 /// Allowed types of Fields in a `ParsedLine`. One of the types described in
 /// https://docs.influxdata.com/influxdb/v2.0/reference/syntax/line-protocol/#data-types-and-format
@@ -409,7 +439,7 @@ impl<'a> EscapedStr<'a> {
     }
 }
 
-impl<'a> Deref for EscapedStr<'a> {
+impl Deref for EscapedStr<'_> {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -481,39 +511,49 @@ impl PartialEq<String> for EscapedStr<'_> {
 }
 
 pub fn parse_lines(input: &str) -> impl Iterator<Item = Result<ParsedLine<'_>>> {
-    split_lines(input).filter_map(|line| {
-        let i = trim_leading(line);
-
-        if i.is_empty() {
-            return None;
-        }
-
-        let res = match parse_line(i) {
-            Ok((remaining, line)) => {
-                // should have parsed the whole input line, if any
-                // data remains it is a parse error for this line
-                // corresponding Go logic:
-                // https://github.com/influxdata/influxdb/blob/217eddc87e14a79b01d0c22994fc139f530094a2/models/points_parser.go#L259-L266
-                if !remaining.is_empty() {
-                    Some(Err(Error::CannotParseEntireLine {
-                        trailing_content: String::from(remaining),
-                    }))
-                } else {
-                    Some(Ok(line))
-                }
-            }
-            Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => Some(Err(e)),
-            Err(nom::Err::Incomplete(_)) => unreachable!("Cannot have incomplete data"), // Only streaming parsers have this
-        };
-
-        if let Some(Err(r)) = &res {
-            debug!("Error parsing line: '{}'. Error was {:?}", line, r);
-        }
-        res
-    })
+    split_lines(input).map(parse_full_line)
 }
 
-/// Split `input` into invidividual lines to be parsed, based on the
+fn parse_full_line(input: &str) -> Result<ParsedLine<'_>> {
+    let res = match parse_line(input) {
+        Ok((remaining, line)) => {
+            // should have parsed the whole input line, if any
+            // data remains it is a parse error for this line
+            // corresponding Go logic:
+            // https://github.com/influxdata/influxdb/blob/217eddc87e14a79b01d0c22994fc139f530094a2/models/points_parser.go#L259-L266
+            if !remaining.is_empty() {
+                Err(Error::CannotParseEntireLine {
+                    trailing_content: String::from(remaining),
+                })
+            } else {
+                Ok(line)
+            }
+        }
+        Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => Err(e),
+        Err(nom::Err::Incomplete(_)) => unreachable!("Cannot have incomplete data"), // Only streaming parsers have this
+    };
+
+    if let Err(r) = &res {
+        debug!("Error parsing line: '{}'. Error was {:?}", input, r);
+    }
+
+    res
+}
+
+pub fn parse_lines_static(input: &Arc<str>) -> impl Iterator<Item = Result<StaticParsedLine>> + '_ {
+    split_trim_lines_idx(input)
+        .map(move |(start, end)| StaticParsedLine::from_str(Arc::clone(input), start, end))
+}
+
+fn split_lines(input: &str) -> impl Iterator<Item = &str> {
+    split_trim_lines_idx(input).map(move |(start, end)| &input[start..end])
+}
+
+fn split_trim_lines_idx(input: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    split_lines_idx(input.as_ref()).filter_map(move |(start, end)| trim_line(input, start, end))
+}
+
+/// Split `input` into individual lines to be parsed, based on the
 /// rules of the Line Protocol format.
 ///
 /// This code is more or less a direct port of the [Go implementation of
@@ -523,7 +563,7 @@ pub fn parse_lines(input: &str) -> impl Iterator<Item = Result<ParsedLine<'_>>> 
 /// logic duplication for scanning fields, duplicating it also means
 /// we can be more sure of the compatibility of the rust parser and
 /// the canonical Go parser.
-fn split_lines(input: &str) -> impl Iterator<Item = &str> {
+fn split_lines_idx(input: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
     // NB: This is ported as closely as possibly from the original Go code:
     let mut quoted = false;
     let mut fields = false;
@@ -534,49 +574,62 @@ fn split_lines(input: &str) -> impl Iterator<Item = &str> {
     let mut commas = 0;
 
     let mut in_escape = false;
-    input.split(move |c| {
-        // skip past escaped characters
-        if in_escape {
-            in_escape = false;
-            return false;
-        }
 
-        if c == '\\' {
-            in_escape = true;
-            return false;
-        }
+    let mut last_idx = 0;
+    let mut chars = input.chars().enumerate();
 
-        if c == ' ' {
-            fields = true;
-            return false;
-        }
+    std::iter::from_fn(move || {
+        while let Some((idx, c)) = chars.next() {
+            // skip past escaped characters
+            if in_escape {
+                in_escape = false;
+                continue;
+            }
 
-        // If we see a double quote, makes sure it is not escaped
-        if fields {
-            if !quoted && c == '=' {
-                equals += 1;
-                return false;
-            } else if !quoted && c == ',' {
-                commas += 1;
-                return false;
-            } else if c == '"' && equals > commas {
-                quoted = !quoted;
-                return false;
+            if c == '\\' {
+                in_escape = true;
+                continue;
+            }
+
+            if c == ' ' {
+                fields = true;
+                continue;
+            }
+
+            // If we see a double quote, makes sure it is not escaped
+            if fields {
+                if !quoted && c == '=' {
+                    equals += 1;
+                    continue;
+                } else if !quoted && c == ',' {
+                    commas += 1;
+                    continue;
+                } else if c == '"' && equals > commas {
+                    quoted = !quoted;
+                    continue;
+                }
+            }
+
+            if c == '\n' && !quoted {
+                // reset all the state -- we found a line
+                quoted = false;
+                fields = false;
+                equals = 0;
+                commas = 0;
+                assert!(!in_escape);
+                in_escape = false;
+                let t = last_idx;
+                last_idx = idx + 1;
+                return Some((t, idx));
             }
         }
 
-        if c == '\n' && !quoted {
-            // reset all the state -- we found a line
-            quoted = false;
-            fields = false;
-            equals = 0;
-            commas = 0;
-            assert!(!in_escape);
-            in_escape = false;
-            return true;
+        if last_idx < input.len() {
+            let t = last_idx;
+            last_idx = input.len();
+            return Some((t, input.len()));
         }
-
-        false
+        None
     })
 }
 
@@ -623,7 +676,7 @@ fn measurement(i: &str) -> IResult<&str, EscapedStr<'_>> {
 
 fn tag_set(i: &str) -> IResult<&str, TagSet<'_>> {
     let one_tag = separated_pair(tag_key, tag("="), tag_value);
-    parameterized_separated_list(tag(","), one_tag, SmallVec::new, |v, i| v.push(i))(i)
+    parameterized_separated_list(tag(","), one_tag, Vec::new, |v, i| v.push(i))(i)
 }
 
 fn tag_key(i: &str) -> IResult<&str, EscapedStr<'_>> {
@@ -641,7 +694,7 @@ fn field_set(i: &str) -> IResult<&str, FieldSet<'_>> {
     let one_field = separated_pair(field_key, tag("="), field_value);
     let sep = tag(",");
 
-    match parameterized_separated_list1(sep, one_field, SmallVec::new, |v, i| v.push(i))(i) {
+    match parameterized_separated_list1(sep, one_field, Vec::new, |v, i| v.push(i))(i) {
         Err(nom::Err::Error(_)) => FieldSetMissing.fail().map_err(nom::Err::Error),
         other => other,
     }
@@ -767,22 +820,18 @@ fn field_bool_value(i: &str) -> IResult<&str, bool> {
     ))(i)
 }
 
-/// Truncates the input slice to remove all whitespace from the
-/// beginning (left), including completely commented-out lines
-fn trim_leading(mut i: &str) -> &str {
-    loop {
-        let offset = i
-            .find(|c| !is_whitespace_boundary_char(c))
-            .unwrap_or_else(|| i.len());
-        i = &i[offset..];
+// Trims a single line slice returning None if this is a comment
+// or has no non-whitespace characters
+fn trim_line(i: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    let str = &i[start..end];
+    let i = str.find(|c: char| !c.is_whitespace())?;
+    let j = str.rfind(|c: char| !c.is_whitespace())?;
 
-        if i.starts_with('#') {
-            let offset = i.find('\n').unwrap_or_else(|| i.len());
-            i = &i[offset..];
-        } else {
-            break i;
-        }
+    if str.as_bytes()[i] as char == '#' {
+        return None;
     }
+
+    Some((start + i, j + 1 + start))
 }
 
 fn whitespace(i: &str) -> IResult<&str, &str> {
@@ -839,7 +888,7 @@ where
     Error: nom::error::ParseError<&'a str>,
 {
     move |i| {
-        let mut result = SmallVec::<[&str; 4]>::new();
+        let mut result = Vec::new();
         let mut head = i;
 
         loop {
@@ -1043,7 +1092,7 @@ const FIELD_KEY_DELIMITERS: &[char] = TAG_KEY_DELIMITERS;
 /// Characters to escape when writing string values in fields
 const FIELD_VALUE_STRING_DELIMITERS: &[char] = &['"'];
 
-/// Writes a str value to f, escaping all caracters in
+/// Writes a str value to f, escaping all characters in
 /// escaping_escaping specificiation.
 ///
 /// Use the constants defined in this module
@@ -1065,9 +1114,9 @@ fn escape_and_write_value(
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use smallvec::smallvec;
     use test_helpers::approximately_equal;
+
+    use super::*;
 
     impl FieldValue<'_> {
         fn unwrap_i64(&self) -> i64 {
@@ -1145,25 +1194,18 @@ mod test {
     }
 
     #[test]
-    fn test_trim_leading() {
-        assert_eq!(trim_leading(&String::from("")), "");
-        assert_eq!(trim_leading(&String::from("  a b c ")), "a b c ");
-        assert_eq!(trim_leading(&String::from("  a ")), "a ");
-        assert_eq!(trim_leading(&String::from("\n  a ")), "a ");
-        assert_eq!(trim_leading(&String::from("\t  a ")), "a ");
-
-        // comments
-        assert_eq!(trim_leading(&String::from("  #comment\n a ")), "a ");
-        assert_eq!(trim_leading(&String::from("#comment\tcomment")), "");
-        assert_eq!(
-            trim_leading(&String::from("#comment\n #comment2\n#comment\na")),
-            "a"
-        );
+    fn test_trim() {
+        assert_eq!(trim_line("  foo  boo", 0, 7).unwrap(), (2, 5));
+        assert_eq!(trim_line("  foo  boo", 0, 8).unwrap(), (2, 8));
+        assert_eq!(trim_line("  foo  boo", 1, 8).unwrap(), (2, 8));
+        assert_eq!(trim_line("  foo  boo", 3, 8).unwrap(), (3, 8));
+        assert!(trim_line("  foo  boo", 0, 2).is_none());
+        assert!(trim_line("  foo  boo", 5, 7).is_none());
     }
 
     #[test]
     fn test_split_lines() {
-        assert_eq!(split_lines("").collect::<Vec<_>>(), vec![""]);
+        assert_eq!(split_lines("").collect::<Vec<_>>().len(), 0);
         assert_eq!(split_lines("foo").collect::<Vec<_>>(), vec!["foo"]);
         assert_eq!(
             split_lines("foo\nbar").collect::<Vec<_>>(),
@@ -1180,7 +1222,7 @@ mod test {
         );
         assert_eq!(
             split_lines("meas tag=val field=1\nnext\n").collect::<Vec<_>>(),
-            vec!["meas tag=val field=1", "next", ""]
+            vec!["meas tag=val field=1", "next"]
         );
         assert_eq!(
             split_lines("meas tag=val field=\"\nval\"\nnext").collect::<Vec<_>>(),
@@ -1197,6 +1239,40 @@ mod test {
         assert_eq!(
             split_lines("meas tag=val field=1,field=\\\"\nval\"\nnext").collect::<Vec<_>>(),
             vec!["meas tag=val field=1,field=\\\"", "val\"", "next"]
+        );
+
+        assert_eq!(
+            split_lines("   meas tag=val field=1,field=\\\"   \n   val\"\n  next  ")
+                .collect::<Vec<_>>(),
+            vec!["meas tag=val field=1,field=\\\"", "val\"", "next"]
+        );
+
+        assert_eq!(
+            split_lines("   meas tag=val field=1,field=\\\"   \n  \n  val\"\n  next  ")
+                .collect::<Vec<_>>(),
+            vec!["meas tag=val field=1,field=\\\"", "val\"", "next"]
+        );
+
+        assert_eq!(
+            split_lines("   meas tag=val field=1,field=\\\"   \n  \n  val\"\n  next  \n ")
+                .collect::<Vec<_>>(),
+            vec!["meas tag=val field=1,field=\\\"", "val\"", "next"]
+        );
+
+        assert_eq!(
+            split_lines("   meas tag=val field=1,field=\\\" \n  # I'm a comment  \n  \n  val\"\n  next # \n ")
+                .collect::<Vec<_>>(),
+            vec!["meas tag=val field=1,field=\\\"", "val\"", "next #"]
+        );
+
+        assert_eq!(
+            split_lines("cpu,host=c val=11 1\nmem sval=\"hi\" 2\ndisk val=true 1")
+                .collect::<Vec<_>>(),
+            vec![
+                "cpu,host=c val=11 1",
+                "mem sval=\"hi\" 2",
+                "disk val=true 1"
+            ]
         );
     }
 
@@ -2070,10 +2146,7 @@ her"#,
         let series = Series {
             raw_input: "foo",
             measurement: EscapedStr::from("m"),
-            tag_set: Some(smallvec![(
-                EscapedStr::from("tag1"),
-                EscapedStr::from("val1")
-            )]),
+            tag_set: Some(vec![(EscapedStr::from("tag1"), EscapedStr::from("val1"))]),
         };
         assert_eq!(series.to_string(), "m,tag1=val1");
     }
@@ -2083,7 +2156,7 @@ her"#,
         let series = Series {
             raw_input: "foo",
             measurement: EscapedStr::from("m"),
-            tag_set: Some(smallvec![
+            tag_set: Some(vec![
                 (EscapedStr::from("tag1"), EscapedStr::from("val1")),
                 (EscapedStr::from("tag2"), EscapedStr::from("val2")),
             ]),
@@ -2096,12 +2169,9 @@ her"#,
         let series = Series {
             raw_input: "foo",
             measurement: EscapedStr::from("m"),
-            tag_set: Some(smallvec![(
-                EscapedStr::from("tag1"),
-                EscapedStr::from("val1")
-            ),]),
+            tag_set: Some(vec![(EscapedStr::from("tag1"), EscapedStr::from("val1"))]),
         };
-        let field_set = smallvec![(EscapedStr::from("field1"), FieldValue::F64(42.1))];
+        let field_set = vec![(EscapedStr::from("field1"), FieldValue::F64(42.1))];
 
         let parsed_line = ParsedLine {
             series,
@@ -2117,12 +2187,9 @@ her"#,
         let series = Series {
             raw_input: "foo",
             measurement: EscapedStr::from("m"),
-            tag_set: Some(smallvec![(
-                EscapedStr::from("tag1"),
-                EscapedStr::from("val1")
-            ),]),
+            tag_set: Some(vec![(EscapedStr::from("tag1"), EscapedStr::from("val1"))]),
         };
-        let field_set = smallvec![(EscapedStr::from("field1"), FieldValue::F64(42.1))];
+        let field_set = vec![(EscapedStr::from("field1"), FieldValue::F64(42.1))];
 
         let parsed_line = ParsedLine {
             series,
@@ -2138,12 +2205,9 @@ her"#,
         let series = Series {
             raw_input: "foo",
             measurement: EscapedStr::from("m"),
-            tag_set: Some(smallvec![(
-                EscapedStr::from("tag1"),
-                EscapedStr::from("val1")
-            ),]),
+            tag_set: Some(vec![(EscapedStr::from("tag1"), EscapedStr::from("val1"))]),
         };
-        let field_set = smallvec![
+        let field_set = vec![
             (EscapedStr::from("field1"), FieldValue::F64(42.1)),
             (EscapedStr::from("field2"), FieldValue::Boolean(false)),
         ];
@@ -2165,15 +2229,15 @@ her"#,
         let series = Series {
             raw_input: "foo",
             measurement: EscapedStr::from("m,and m"),
-            tag_set: Some(smallvec![(
+            tag_set: Some(vec![(
                 EscapedStr::from("tag ,1"),
-                EscapedStr::from("val ,1")
-            ),]),
+                EscapedStr::from("val ,1"),
+            )]),
         };
-        let field_set = smallvec![(
+        let field_set = vec![(
             EscapedStr::from("field ,1"),
-            FieldValue::String(EscapedStr::from("Foo\"Bar"))
-        ),];
+            FieldValue::String(EscapedStr::from("Foo\"Bar")),
+        )];
 
         let parsed_line = ParsedLine {
             series,
