@@ -81,6 +81,10 @@ impl<K: AsPrimitive<usize> + FromPrimitive + Zero> PackedStringArray<K> {
     pub fn size(&self) -> usize {
         self.storage.len() + self.offsets.len() * std::mem::size_of::<i32>()
     }
+
+    pub fn into_inner(self) -> (Vec<K>, String) {
+        (self.offsets, self.storage)
+    }
 }
 
 impl PackedStringArray<i32> {

@@ -8,7 +8,6 @@ use std::{
     num::NonZeroU64,
 };
 
-use arrow_util::bitset::BitSet;
 use chrono::{DateTime, Utc};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use ouroboros::self_referencing;
@@ -20,8 +19,11 @@ use data_types::{
 };
 use influxdb_line_protocol::{FieldValue, ParsedLine};
 use internal_types::schema::{InfluxColumnType, InfluxFieldType, TIME_COLUMN_NAME};
+use internal_types::write::builder::ColumnWriteBuilder;
+use internal_types::write::{ColumnWrite, ColumnWriteValues};
 
 use crate::entry_fb;
+use arrow_util::bitset::{count_set_bits, negate_mask};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -42,24 +44,14 @@ pub enum Error {
         table: String,
         column: String,
         line_number: usize,
-        source: ColumnError,
+        source: internal_types::write::builder::Error,
     },
 
     #[snafu(display("invalid flatbuffers: field {} is required", field))]
     FlatbufferFieldMissing { field: String },
 }
 
-#[derive(Debug, Snafu)]
-pub enum ColumnError {
-    #[snafu(display("type mismatch: expected {} but got {}", expected_type, new_type))]
-    ColumnTypeMismatch {
-        new_type: String,
-        expected_type: String,
-    },
-}
-
 pub type Result<T, E = Error> = std::result::Result<T, E>;
-type ColumnResult<T, E = ColumnError> = std::result::Result<T, E>;
 
 /// Converts parsed line protocol into a collection of ShardedEntry with the
 /// underlying flatbuffers bytes generated.
@@ -177,7 +169,7 @@ fn build_table_write_batch<'a>(
                 let key = key.as_str();
                 let builder = columns
                     .entry(key)
-                    .or_insert_with(ColumnBuilder::new_tag_column);
+                    .or_insert_with(|| ColumnWriteBuilder::new_tag_column(false, false));
                 builder.null_to_idx(idx);
                 builder
                     .push_tag(value.as_str())
@@ -196,7 +188,7 @@ fn build_table_write_batch<'a>(
                 FieldValue::Boolean(b) => {
                     let builder = columns
                         .entry(key)
-                        .or_insert_with(ColumnBuilder::new_bool_column);
+                        .or_insert_with(|| ColumnWriteBuilder::new_bool_column(false));
                     builder.null_to_idx(idx);
                     builder.push_bool(*b).context(TableColumnTypeMismatch {
                         table: table_name,
@@ -207,7 +199,7 @@ fn build_table_write_batch<'a>(
                 FieldValue::U64(v) => {
                     let builder = columns
                         .entry(key)
-                        .or_insert_with(ColumnBuilder::new_u64_column);
+                        .or_insert_with(ColumnWriteBuilder::new_u64_column);
                     builder.null_to_idx(idx);
                     builder.push_u64(*v).context(TableColumnTypeMismatch {
                         table: table_name,
@@ -218,7 +210,7 @@ fn build_table_write_batch<'a>(
                 FieldValue::F64(v) => {
                     let builder = columns
                         .entry(key)
-                        .or_insert_with(ColumnBuilder::new_f64_column);
+                        .or_insert_with(ColumnWriteBuilder::new_f64_column);
                     builder.null_to_idx(idx);
                     builder.push_f64(*v).context(TableColumnTypeMismatch {
                         table: table_name,
@@ -229,7 +221,7 @@ fn build_table_write_batch<'a>(
                 FieldValue::I64(v) => {
                     let builder = columns
                         .entry(key)
-                        .or_insert_with(ColumnBuilder::new_i64_column);
+                        .or_insert_with(ColumnWriteBuilder::new_i64_column);
                     builder.null_to_idx(idx);
                     builder.push_i64(*v).context(TableColumnTypeMismatch {
                         table: table_name,
@@ -240,7 +232,7 @@ fn build_table_write_batch<'a>(
                 FieldValue::String(v) => {
                     let builder = columns
                         .entry(key)
-                        .or_insert_with(ColumnBuilder::new_string_column);
+                        .or_insert_with(|| ColumnWriteBuilder::new_string_column(false, false));
                     builder.null_to_idx(idx);
                     builder
                         .push_string(v.as_str())
@@ -255,7 +247,7 @@ fn build_table_write_batch<'a>(
 
         let builder = columns
             .entry(TIME_COLUMN_NAME)
-            .or_insert_with(ColumnBuilder::new_time_column);
+            .or_insert_with(ColumnWriteBuilder::new_time_column);
         builder
             .push_time(
                 line.timestamp
@@ -274,7 +266,7 @@ fn build_table_write_batch<'a>(
 
     let columns = columns
         .into_iter()
-        .map(|(column_name, builder)| builder.build_flatbuffer(fbb, column_name))
+        .map(|(column_name, builder)| build_flatbuffer(builder.build(column_name), fbb))
         .collect::<Vec<_>>();
     let columns = fbb.create_vector(&columns);
 
@@ -502,357 +494,108 @@ impl<'a> Column<'a> {
     }
 }
 
-#[derive(Debug)]
-struct ColumnBuilder<'a> {
-    nulls: BitSet,
-    values: ColumnRaw<'a>,
-}
+fn build_flatbuffer<'a>(
+    write: ColumnWrite<'a>,
+    fbb: &mut FlatBufferBuilder<'a>,
+) -> WIPOffset<entry_fb::Column<'a>> {
+    let name = Some(fbb.create_string(write.name.as_ref()));
+    let null_mask = if count_set_bits(&write.valid_mask) != write.row_count {
+        let mut mask = write.valid_mask.into_owned();
+        negate_mask(&mut mask, write.row_count);
+        Some(fbb.create_vector_direct(&mask))
+    } else {
+        None
+    };
 
-impl<'a> ColumnBuilder<'a> {
-    fn new_tag_column() -> Self {
-        Self {
-            nulls: BitSet::new(),
-            values: ColumnRaw::Tag(Vec::new()),
+    let values = match &write.values {
+        ColumnWriteValues::String(values) => {
+            let values = values
+                .iter()
+                .map(|v| fbb.create_string(v))
+                .collect::<Vec<_>>();
+            let values = fbb.create_vector(&values);
+            entry_fb::StringValues::create(
+                fbb,
+                &entry_fb::StringValuesArgs {
+                    values: Some(values),
+                },
+            )
+            .as_union_value()
         }
-    }
-
-    fn new_string_column() -> Self {
-        Self {
-            nulls: BitSet::new(),
-            values: ColumnRaw::String(Vec::new()),
+        ColumnWriteValues::I64(values) => {
+            let values = fbb.create_vector(&values);
+            entry_fb::I64Values::create(
+                fbb,
+                &entry_fb::I64ValuesArgs {
+                    values: Some(values),
+                },
+            )
+            .as_union_value()
         }
-    }
-
-    fn new_time_column() -> Self {
-        Self {
-            nulls: BitSet::new(),
-            values: ColumnRaw::Time(Vec::new()),
+        ColumnWriteValues::Bool(values) => {
+            let values = fbb.create_vector(&values);
+            entry_fb::BoolValues::create(
+                fbb,
+                &entry_fb::BoolValuesArgs {
+                    values: Some(values),
+                },
+            )
+            .as_union_value()
         }
-    }
-
-    fn new_bool_column() -> Self {
-        Self {
-            nulls: BitSet::new(),
-            values: ColumnRaw::Bool(Vec::new()),
+        ColumnWriteValues::F64(values) => {
+            let values = fbb.create_vector(&values);
+            entry_fb::F64Values::create(
+                fbb,
+                &entry_fb::F64ValuesArgs {
+                    values: Some(values),
+                },
+            )
+            .as_union_value()
         }
-    }
-
-    fn new_u64_column() -> Self {
-        Self {
-            nulls: BitSet::new(),
-            values: ColumnRaw::U64(Vec::new()),
+        ColumnWriteValues::U64(values) => {
+            let values = fbb.create_vector(&values);
+            entry_fb::U64Values::create(
+                fbb,
+                &entry_fb::U64ValuesArgs {
+                    values: Some(values),
+                },
+            )
+            .as_union_value()
         }
-    }
+        _ => unimplemented!(),
+    };
 
-    fn new_f64_column() -> Self {
-        Self {
-            nulls: BitSet::new(),
-            values: ColumnRaw::F64(Vec::new()),
-        }
-    }
-
-    fn new_i64_column() -> Self {
-        Self {
-            nulls: BitSet::new(),
-            values: ColumnRaw::I64(Vec::new()),
-        }
-    }
-
-    // ensures there are at least as many rows (or nulls) to idx
-    fn null_to_idx(&mut self, idx: usize) {
-        for _ in self.nulls.len()..idx {
-            self.nulls.push(true)
-        }
-    }
-
-    fn push_tag(&mut self, value: &'a str) -> ColumnResult<()> {
-        match &mut self.values {
-            ColumnRaw::Tag(values) => {
-                self.nulls.push(false);
-                values.push(value)
-            }
-            _ => {
-                return ColumnTypeMismatch {
-                    new_type: "tag",
-                    expected_type: self.type_description(),
-                }
-                .fail()
-            }
-        }
-
-        Ok(())
-    }
-
-    fn push_string(&mut self, value: &'a str) -> ColumnResult<()> {
-        match &mut self.values {
-            ColumnRaw::String(values) => {
-                self.nulls.push(false);
-                values.push(value)
-            }
-            _ => {
-                return ColumnTypeMismatch {
-                    new_type: "string",
-                    expected_type: self.type_description(),
-                }
-                .fail()
-            }
-        }
-
-        Ok(())
-    }
-
-    fn push_time(&mut self, value: i64) -> ColumnResult<()> {
-        match &mut self.values {
-            ColumnRaw::Time(times) => {
-                times.push(value);
-                self.nulls.push(false);
-            }
-            _ => {
-                return ColumnTypeMismatch {
-                    new_type: "time",
-                    expected_type: self.type_description(),
-                }
-                .fail()
-            }
-        }
-
-        Ok(())
-    }
-
-    fn push_bool(&mut self, value: bool) -> ColumnResult<()> {
-        match &mut self.values {
-            ColumnRaw::Bool(values) => {
-                values.push(value);
-                self.nulls.push(false);
-            }
-            _ => {
-                return ColumnTypeMismatch {
-                    new_type: "bool",
-                    expected_type: self.type_description(),
-                }
-                .fail()
-            }
-        }
-
-        Ok(())
-    }
-
-    fn push_u64(&mut self, value: u64) -> ColumnResult<()> {
-        match &mut self.values {
-            ColumnRaw::U64(values) => {
-                values.push(value);
-                self.nulls.push(false);
-            }
-            _ => {
-                return ColumnTypeMismatch {
-                    new_type: "u64",
-                    expected_type: self.type_description(),
-                }
-                .fail()
-            }
-        }
-
-        Ok(())
-    }
-
-    fn push_f64(&mut self, value: f64) -> ColumnResult<()> {
-        match &mut self.values {
-            ColumnRaw::F64(values) => {
-                values.push(value);
-                self.nulls.push(false);
-            }
-            _ => {
-                return ColumnTypeMismatch {
-                    new_type: "f64",
-                    expected_type: self.type_description(),
-                }
-                .fail()
-            }
-        }
-
-        Ok(())
-    }
-
-    fn push_i64(&mut self, value: i64) -> ColumnResult<()> {
-        match &mut self.values {
-            ColumnRaw::I64(values) => {
-                values.push(value);
-                self.nulls.push(false);
-            }
-            _ => {
-                return ColumnTypeMismatch {
-                    new_type: "i64",
-                    expected_type: self.type_description(),
-                }
-                .fail()
-            }
-        }
-
-        Ok(())
-    }
-
-    fn build_flatbuffer(
-        &self,
-        fbb: &mut FlatBufferBuilder<'a>,
-        column_name: &str,
-    ) -> WIPOffset<entry_fb::Column<'a>> {
-        let name = Some(fbb.create_string(column_name));
-        let null_mask = if self.nulls.count_set() != 0 {
-            Some(fbb.create_vector_direct(self.nulls.bytes()))
-        } else {
-            None
-        };
-
-        let (logical_column_type, values_type, values) = match &self.values {
-            ColumnRaw::Tag(values) => {
-                let values = values
-                    .iter()
-                    .map(|v| fbb.create_string(v))
-                    .collect::<Vec<_>>();
-                let values = fbb.create_vector(&values);
-                let values = entry_fb::StringValues::create(
-                    fbb,
-                    &entry_fb::StringValuesArgs {
-                        values: Some(values),
-                    },
-                );
-
-                (
-                    entry_fb::LogicalColumnType::Tag,
-                    entry_fb::ColumnValues::StringValues,
-                    values.as_union_value(),
-                )
-            }
-            ColumnRaw::String(values) => {
-                let values = values
-                    .iter()
-                    .map(|v| fbb.create_string(v))
-                    .collect::<Vec<_>>();
-                let values = fbb.create_vector(&values);
-                let values = entry_fb::StringValues::create(
-                    fbb,
-                    &entry_fb::StringValuesArgs {
-                        values: Some(values),
-                    },
-                );
-
-                (
-                    entry_fb::LogicalColumnType::Field,
-                    entry_fb::ColumnValues::StringValues,
-                    values.as_union_value(),
-                )
-            }
-            ColumnRaw::Time(values) => {
-                let values = fbb.create_vector(&values);
-                let values = entry_fb::I64Values::create(
-                    fbb,
-                    &entry_fb::I64ValuesArgs {
-                        values: Some(values),
-                    },
-                );
-
-                (
-                    entry_fb::LogicalColumnType::Time,
-                    entry_fb::ColumnValues::I64Values,
-                    values.as_union_value(),
-                )
-            }
-            ColumnRaw::I64(values) => {
-                let values = fbb.create_vector(&values);
-                let values = entry_fb::I64Values::create(
-                    fbb,
-                    &entry_fb::I64ValuesArgs {
-                        values: Some(values),
-                    },
-                );
-
-                (
-                    entry_fb::LogicalColumnType::Field,
-                    entry_fb::ColumnValues::I64Values,
-                    values.as_union_value(),
-                )
-            }
-            ColumnRaw::Bool(values) => {
-                let values = fbb.create_vector(&values);
-                let values = entry_fb::BoolValues::create(
-                    fbb,
-                    &entry_fb::BoolValuesArgs {
-                        values: Some(values),
-                    },
-                );
-
-                (
-                    entry_fb::LogicalColumnType::Field,
-                    entry_fb::ColumnValues::BoolValues,
-                    values.as_union_value(),
-                )
-            }
-            ColumnRaw::F64(values) => {
-                let values = fbb.create_vector(&values);
-                let values = entry_fb::F64Values::create(
-                    fbb,
-                    &entry_fb::F64ValuesArgs {
-                        values: Some(values),
-                    },
-                );
-
-                (
-                    entry_fb::LogicalColumnType::Field,
-                    entry_fb::ColumnValues::F64Values,
-                    values.as_union_value(),
-                )
-            }
-            ColumnRaw::U64(values) => {
-                let values = fbb.create_vector(&values);
-                let values = entry_fb::U64Values::create(
-                    fbb,
-                    &entry_fb::U64ValuesArgs {
-                        values: Some(values),
-                    },
-                );
-
-                (
-                    entry_fb::LogicalColumnType::Field,
-                    entry_fb::ColumnValues::U64Values,
-                    values.as_union_value(),
-                )
-            }
-        };
-
-        entry_fb::Column::create(
-            fbb,
-            &entry_fb::ColumnArgs {
-                name,
-                logical_column_type,
-                values_type,
-                values: Some(values),
-                null_mask,
+    let (logical_column_type, values_type) = match write.influx_type {
+        InfluxColumnType::Tag => (
+            entry_fb::LogicalColumnType::Tag,
+            entry_fb::ColumnValues::StringValues,
+        ),
+        InfluxColumnType::Timestamp => (
+            entry_fb::LogicalColumnType::Time,
+            entry_fb::ColumnValues::I64Values,
+        ),
+        InfluxColumnType::Field(field) => (
+            entry_fb::LogicalColumnType::Field,
+            match field {
+                InfluxFieldType::Float => entry_fb::ColumnValues::F64Values,
+                InfluxFieldType::Integer => entry_fb::ColumnValues::I64Values,
+                InfluxFieldType::UInteger => entry_fb::ColumnValues::U64Values,
+                InfluxFieldType::String => entry_fb::ColumnValues::StringValues,
+                InfluxFieldType::Boolean => entry_fb::ColumnValues::BoolValues,
             },
-        )
-    }
+        ),
+    };
 
-    fn type_description(&self) -> &str {
-        match self.values {
-            ColumnRaw::String(_) => "string",
-            ColumnRaw::I64(_) => "i64",
-            ColumnRaw::F64(_) => "f64",
-            ColumnRaw::U64(_) => "u64",
-            ColumnRaw::Time(_) => "time",
-            ColumnRaw::Tag(_) => "tag",
-            ColumnRaw::Bool(_) => "bool",
-        }
-    }
-}
-
-#[derive(Debug)]
-enum ColumnRaw<'a> {
-    Tag(Vec<&'a str>),
-    Time(Vec<i64>),
-    I64(Vec<i64>),
-    F64(Vec<f64>),
-    U64(Vec<u64>),
-    String(Vec<&'a str>),
-    Bool(Vec<bool>),
+    entry_fb::Column::create(
+        fbb,
+        &entry_fb::ColumnArgs {
+            name,
+            logical_column_type,
+            values_type,
+            values: Some(values),
+            null_mask,
+        },
+    )
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Copy, Clone)]
@@ -1341,13 +1084,13 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
+    use arrow_util::bitset::iter_bits;
     use data_types::database_rules::NO_SHARD_CONFIG;
     use influxdb_line_protocol::parse_lines;
+    use internal_types::write::TableWrite;
 
     use super::test_helpers::*;
     use super::*;
-    use arrow_util::bitset::iter_bits;
-    use internal_types::write::TableWrite;
 
     #[test]
     fn shards_lines() {

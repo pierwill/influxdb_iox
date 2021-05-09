@@ -105,6 +105,10 @@ impl<K: AsPrimitive<usize> + FromPrimitive + Zero> StringDictionary<K> {
     pub fn values(&self) -> &PackedStringArray<K> {
         &self.storage
     }
+
+    pub fn into_inner(self) -> PackedStringArray<K> {
+        self.storage
+    }
 }
 
 fn hash_str(hasher: &ahash::RandomState, value: &str) -> u64 {

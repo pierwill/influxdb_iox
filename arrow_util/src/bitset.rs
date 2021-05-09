@@ -98,7 +98,7 @@ impl BitSet {
 
     /// Returns the number of set bits
     pub fn count_set(&self) -> usize {
-        self.buffer.iter().map(|x| x.count_ones() as usize).sum()
+        count_set_bits(&self.buffer)
     }
 
     /// Returns the number of unset bits
@@ -110,6 +110,11 @@ impl BitSet {
     /// Returns a reference to the compacted array
     pub fn bytes(&self) -> &[u8] {
         self.buffer.as_slice()
+    }
+
+    /// Takes the underlying buffer out of this bitset
+    pub fn take_bytes(self) -> Vec<u8> {
+        self.buffer
     }
 
     /// Converts this BitSet to a buffer compatible with arrows boolean encoding
@@ -128,6 +133,31 @@ impl BitSet {
     }
 }
 
+#[inline]
+pub fn negate_mask(buffer: &mut [u8], row_count: usize) {
+    let whole_bytes = row_count >> 3;
+    for i in 0..whole_bytes {
+        buffer[i] = !buffer[i]
+    }
+    let remainder = row_count & 7;
+    if remainder != 0 {
+        buffer[whole_bytes] = negate_bits(buffer[whole_bytes], remainder)
+    }
+}
+
+#[inline]
+pub fn negate_bits(byte: u8, bits: usize) -> u8 {
+    let bits = bits & 7;
+    let mask = (1 << bits) - 1;
+    (!byte & mask) | (byte & !mask)
+}
+
+#[inline]
+pub fn count_set_bits(buffer: &[u8]) -> usize {
+    buffer.iter().map(|x| x.count_ones() as usize).sum()
+}
+
+#[inline]
 pub fn is_bit_set(idx: usize, buffer: &[u8]) -> bool {
     let byte_idx = idx >> 3;
     let bit_idx = idx & 7;
@@ -341,5 +371,27 @@ mod tests {
 
         assert_eq!(collected.as_slice(), buffer.as_slice());
         assert_eq!(buffer.as_slice(), mask_buffer.as_slice());
+    }
+
+    #[test]
+    fn test_negate() {
+        assert_eq!(negate_bits(0b00000000, 3), 0b00000111);
+        assert_eq!(negate_bits(0b11000000, 3), 0b11000111);
+        assert_eq!(negate_bits(0b11000010, 3), 0b11000101);
+
+        let mut mask = vec![0b10111111];
+        negate_mask(mask.as_mut_slice(), 8);
+        assert_eq!(mask[0], 0b01000000);
+
+        let bools = &[
+            false, false, true, true, false, false, true, false, true, false, false, true,
+        ];
+        let negated_bools: Vec<_> = bools.iter().map(|x| !*x).collect();
+
+        let mut c1 = compact_bools(bools);
+        negate_mask(c1.as_mut_slice(), bools.len());
+        let c2 = compact_bools(&negated_bools);
+
+        assert_eq!(c1, c2)
     }
 }

@@ -1648,6 +1648,8 @@ version = "0.1.0"
 dependencies = [
  "arrow 0.1.0",
  "arrow_util",
+ "hashbrown 0.11.2",
+ "influxdb_line_protocol",
  "observability_deps",
  "snafu",
 ]

@@ -176,8 +176,8 @@ impl Column {
                 for str in data.iter() {
                     let idx = positions.next().unwrap();
                     col_data.extend(data_offset + idx - col_data.len());
-                    stats.update(str.as_ref());
-                    col_data.append(str.as_ref());
+                    stats.update(*str);
+                    col_data.append(str);
                 }
 
                 col_data.extend(data_offset + row_count - col_data.len());
@@ -194,9 +194,8 @@ impl Column {
                 col_data.resize(data_offset + row_count, -1);
 
                 for (idx, value) in iter_set_positions(mask).zip(data.as_ref()) {
-                    stats.update(value.as_ref());
-                    col_data[data_offset + idx] =
-                        dictionary.lookup_value_or_insert(value.as_ref()).into();
+                    stats.update(*value);
+                    col_data[data_offset + idx] = dictionary.lookup_value_or_insert(value).into();
                 }
             }
         };

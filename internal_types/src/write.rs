@@ -3,6 +3,12 @@
 use crate::schema::InfluxColumnType;
 use std::borrow::Cow;
 
+pub mod builder;
+
+/// A newtype that allows implementing FromIterator
+#[derive(Debug, Clone)]
+pub struct CollectedTableWrites<'a>(pub Vec<TableWrite<'a>>);
+
 #[derive(Debug, Clone)]
 pub struct TableWrite<'a> {
     pub table_name: Cow<'a, str>,
@@ -23,7 +29,7 @@ pub enum ColumnWriteValues<'a> {
     F64(Cow<'a, [f64]>),
     I64(Cow<'a, [i64]>),
     U64(Cow<'a, [u64]>),
-    String(Cow<'a, [Cow<'a, str>]>),
+    String(Cow<'a, [&'a str]>),
     PackedString(PackedStrings<'a>),
     Dictionary(Dictionary<'a>),
     PackedBool(Cow<'a, [u8]>),
@@ -52,7 +58,7 @@ impl<'a> ColumnWriteValues<'a> {
         }
     }
 
-    pub fn string(&self) -> Option<&[Cow<'a, str>]> {
+    pub fn string(&self) -> Option<&[&'a str]> {
         match &self {
             Self::String(data) => Some(data.as_ref()),
             _ => None,
