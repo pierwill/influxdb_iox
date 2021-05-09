@@ -2445,7 +2445,7 @@ mod tests {
 
         print!("Partitions: {:?}", db.partition_keys().unwrap());
 
-        let partition_summaries = vec![
+        let mut partition_summaries = vec![
             db.partition_summary("1970-01-01T00"),
             db.partition_summary("1970-01-05T15"),
         ];
@@ -2467,21 +2467,21 @@ mod tests {
                                 }),
                             },
                             ColumnSummary {
-                                name: "time".into(),
-                                influxdb_type: Some(InfluxDbType::Timestamp),
-                                stats: Statistics::I64(StatValues {
-                                    min: 1,
-                                    max: 2,
-                                    count: 2,
-                                }),
-                            },
-                            ColumnSummary {
                                 name: "baz".into(),
                                 influxdb_type: Some(InfluxDbType::Field),
                                 stats: Statistics::F64(StatValues {
                                     min: 3.0,
                                     max: 3.0,
                                     count: 1,
+                                }),
+                            },
+                            ColumnSummary {
+                                name: "time".into(),
+                                influxdb_type: Some(InfluxDbType::Timestamp),
+                                stats: Statistics::I64(StatValues {
+                                    min: 1,
+                                    max: 2,
+                                    count: 2,
                                 }),
                             },
                         ],
@@ -2563,6 +2563,12 @@ mod tests {
                 ],
             },
         ];
+
+        for partition in partition_summaries.iter_mut() {
+            for table in partition.tables.iter_mut() {
+                table.columns.sort_by(|a, b| a.name.cmp(&b.name))
+            }
+        }
 
         assert_eq!(
             expected, partition_summaries,
