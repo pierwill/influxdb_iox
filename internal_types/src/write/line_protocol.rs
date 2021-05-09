@@ -1,13 +1,15 @@
 use std::borrow::Cow;
+use std::hash::Hash;
 
+use chrono::Utc;
 use hashbrown::HashMap;
-use influxdb_line_protocol::{parse_lines, FieldValue, ParsedLine};
 use snafu::{ResultExt, Snafu};
+
+use influxdb_line_protocol::{parse_lines, FieldValue, ParsedLine};
 
 use crate::schema::TIME_COLUMN_NAME;
 use crate::write::builder::ColumnWriteBuilder;
 use crate::write::TableWrite;
-use chrono::Utc;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -28,12 +30,12 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug)]
 pub struct Options {
-    default_time: i64,
-    tag_dictionary: bool,
-    tag_packed: bool,
-    string_dictionary: bool,
-    string_packed: bool,
-    bool_packed: bool,
+    pub default_time: i64,
+    pub tag_dictionary: bool,
+    pub tag_packed: bool,
+    pub string_dictionary: bool,
+    pub string_packed: bool,
+    pub bool_packed: bool,
 }
 
 impl Default for Options {
@@ -53,22 +55,35 @@ pub fn lp_to_table_writes<'a>(
     lp: &'a str,
     options: &Options,
 ) -> Result<HashMap<Cow<'a, str>, TableWrite<'a>>> {
-    lines_to_table_writes(parse_lines(lp), options)
+    let mut partitioned = lines_to_table_writes(
+        parse_lines(lp)
+            .into_iter()
+            .map(|result| result.map(|line| ((), line))),
+        options,
+    )?;
+    Ok(partitioned.remove(&()).unwrap())
 }
 
-pub fn lines_to_table_writes<'a>(
-    lines: impl IntoIterator<Item = Result<ParsedLine<'a>, influxdb_line_protocol::Error>>,
+pub fn lines_to_table_writes<'a, K, I>(
+    lines: I,
     options: &Options,
-) -> Result<HashMap<Cow<'a, str>, TableWrite<'a>>> {
-    let mut tables: HashMap<Cow<'a, str>, (usize, HashMap<Cow<'a, str>, ColumnWriteBuilder<'a>>)> =
-        Default::default();
+) -> Result<HashMap<K, HashMap<Cow<'a, str>, TableWrite<'a>>>>
+where
+    K: 'a + PartialEq + Eq + Hash,
+    I: Iterator<Item = Result<(K, ParsedLine<'a>), influxdb_line_protocol::Error>>,
+{
+    let mut partitioned_builders: HashMap<
+        K,
+        HashMap<Cow<'a, str>, (usize, HashMap<Cow<'a, str>, ColumnWriteBuilder<'a>>)>,
+    > = Default::default();
 
-    for (idx, line) in lines.into_iter().enumerate() {
-        let line = line.context(ParseError {
+    for (idx, line) in lines.enumerate() {
+        let (key, line) = line.context(ParseError {
             line_number: idx + 1,
         })?;
 
-        let (rows, table) = tables.entry(line.series.measurement.into()).or_default();
+        let builders = partitioned_builders.entry(key).or_default();
+        let (rows, table) = builders.entry(line.series.measurement.into()).or_default();
         *rows += 1;
 
         if let Some(tagset) = line.series.tag_set {
@@ -143,17 +158,25 @@ pub fn lines_to_table_writes<'a>(
         }
     }
 
-    Ok(tables
+    Ok(partitioned_builders
         .into_iter()
-        .map(|(name, (_, columns))| {
+        .map(|(k, builders)| {
             (
-                name,
-                TableWrite {
-                    columns: columns
-                        .into_iter()
-                        .map(|(column_name, builder)| (column_name, builder.build()))
-                        .collect(),
-                },
+                k,
+                builders
+                    .into_iter()
+                    .map(|(name, (_, columns))| {
+                        (
+                            name,
+                            TableWrite {
+                                columns: columns
+                                    .into_iter()
+                                    .map(|(column_name, builder)| (column_name, builder.build()))
+                                    .collect(),
+                            },
+                        )
+                    })
+                    .collect(),
             )
         })
         .collect())
@@ -161,8 +184,9 @@ pub fn lines_to_table_writes<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::schema::{InfluxColumnType, InfluxFieldType};
+
+    use super::*;
 
     #[test]
     fn test_basic() {
@@ -346,5 +370,74 @@ mod tests {
         let foo = columns["foo"].values.packed_string().unwrap();
         assert_eq!(foo.values.as_ref(), "barbarbananabarbar");
         assert_eq!(foo.indexes.as_ref(), &[0, 3, 6, 12, 15, 18]);
+    }
+
+    #[test]
+    fn test_partition() {
+        let lp = r#"
+            a,foo=bar val="cupcakes" 1
+            a,foo=bar val="bongo" 2
+            a,foo=banana val="cupcakes" 3
+            a,foo=bar val="cupcakes" 4
+            a,foo=bar val="bongo" 5
+            b,foo=bar val="bongo" 6
+            a,foo=bar val="bongo" 7
+            a,foo=bar val="bongo" 8
+            a,foo=banana val="cupcakes" 9
+            a,foo=bar val="cupcakes" 10
+            a,foo=banana val="cupcakes" 11
+        "#;
+        let options = Options {
+            string_packed: true,
+            tag_dictionary: true,
+            ..Default::default()
+        };
+
+        let writes = lines_to_table_writes::<Cow<'_, str>, _>(
+            parse_lines(lp).map(|result| {
+                result.map(|line| {
+                    (
+                        line.series.tag_set.as_ref().unwrap()[0].1.clone().into(),
+                        line,
+                    )
+                })
+            }),
+            &options,
+        )
+        .unwrap();
+
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes["bar"].len(), 2);
+        assert_eq!(writes["banana"].len(), 1);
+
+        assert_eq!(writes["bar"]["a"].columns.len(), 3);
+        assert_eq!(writes["bar"]["b"].columns.len(), 3);
+        assert_eq!(writes["banana"]["a"].columns.len(), 3);
+
+        assert_eq!(writes["bar"]["a"].columns["val"].row_count, 7);
+        assert_eq!(writes["bar"]["b"].columns["val"].row_count, 1);
+        assert_eq!(writes["banana"]["a"].columns["val"].row_count, 3);
+
+        assert_eq!(
+            writes["bar"]["a"].columns[TIME_COLUMN_NAME]
+                .values
+                .i64()
+                .unwrap(),
+            &[1, 2, 4, 5, 7, 8, 10]
+        );
+        assert_eq!(
+            writes["bar"]["b"].columns[TIME_COLUMN_NAME]
+                .values
+                .i64()
+                .unwrap(),
+            &[6]
+        );
+        assert_eq!(
+            writes["banana"]["a"].columns[TIME_COLUMN_NAME]
+                .values
+                .i64()
+                .unwrap(),
+            &[3, 9, 11]
+        );
     }
 }
