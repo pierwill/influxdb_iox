@@ -17,7 +17,7 @@ use data_types::{
     DatabaseName,
 };
 use influxdb_iox_client::format::QueryOutputFormat;
-use influxdb_line_protocol::parse_lines;
+use influxdb_line_protocol::parse_lines_static;
 use object_store::ObjectStoreApi;
 use query::{Database, PartitionChunk};
 use server::{ConnectionManager, Server as AppServer};
@@ -457,8 +457,9 @@ where
     let body = parse_body(req).await?;
 
     let body = str::from_utf8(&body).context(ReadingBodyAsUtf8)?;
+    let body = Arc::from(body);
 
-    let lines = parse_lines(body)
+    let lines = parse_lines_static(&body)
         .collect::<Result<Vec<_>, influxdb_line_protocol::Error>>()
         .context(ParsingLineProtocol)?;
 
@@ -470,9 +471,10 @@ where
         KeyValue::new("path", path),
     ];
 
-    server.write_lines(&db_name, &lines).await.map_err(|e| {
+    let num_lines = lines.len();
+    server.write_lines(&db_name, lines).await.map_err(|e| {
         server.metrics.ingest_points_total.add_with_labels(
-            lines.len() as u64,
+            num_lines as u64,
             &[
                 metrics::KeyValue::new("status", "error"),
                 metrics::KeyValue::new("db_name", db_name.to_string()),
@@ -485,7 +487,6 @@ where
                 metrics::KeyValue::new("db_name", db_name.to_string()),
             ],
         );
-        let num_lines = lines.len();
         debug!(?e, ?db_name, ?num_lines, "error writing lines");
 
         obs.client_error_with_labels(&metric_kv); // user error

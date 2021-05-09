@@ -84,7 +84,7 @@ use data_types::{
     {DatabaseName, DatabaseNameError},
 };
 use entry::{lines_to_sharded_entries, Entry, OwnedSequencedEntry, ShardedEntry};
-use influxdb_line_protocol::ParsedLine;
+use influxdb_line_protocol::StaticParsedLine;
 use internal_types::once::OnceNonZeroU32;
 use metrics::{KeyValue, MetricObserverBuilder, MetricRegistry};
 use object_store::{path::ObjectStorePath, ObjectStore, ObjectStoreApi};
@@ -509,7 +509,7 @@ impl<M: ConnectionManager> Server<M> {
     /// of ShardedEntry which are then sent to other IOx servers based on
     /// the ShardConfig or sent to the local database for buffering in the
     /// WriteBuffer and/or the MutableBuffer if configured.
-    pub async fn write_lines(&self, db_name: &str, lines: &[ParsedLine<'_>]) -> Result<()> {
+    pub async fn write_lines(&self, db_name: &str, lines: Vec<StaticParsedLine>) -> Result<()> {
         self.require_id()?;
 
         let db_name = DatabaseName::new(db_name).context(InvalidDatabaseName)?;
@@ -528,8 +528,12 @@ impl<M: ConnectionManager> Server<M> {
             let rules = db.rules.read();
             let shard_config = &rules.shard_config;
 
-            let sharded_entries = lines_to_sharded_entries(lines, shard_config.as_ref(), &*rules)
-                .context(LineConversion)?;
+            let sharded_entries = lines_to_sharded_entries(
+                lines.iter().map(|x| x.inner()),
+                shard_config.as_ref(),
+                &*rules,
+            )
+            .context(LineConversion)?;
 
             let shards = shard_config
                 .as_ref()
@@ -984,7 +988,7 @@ mod tests {
     use data_types::database_rules::{
         HashRing, PartitionTemplate, ShardConfig, TemplatePart, NO_SHARD_CONFIG,
     };
-    use influxdb_line_protocol::parse_lines;
+    use influxdb_line_protocol::{parse_lines, parse_lines_static};
     use metrics::MetricRegistry;
     use object_store::{memory::InMemory, path::ObjectStorePath};
     use query::{frontend::sql::SqlQueryPlanner, Database};
@@ -1017,8 +1021,10 @@ mod tests {
         let resp = server.require_id().unwrap_err();
         assert!(matches!(resp, Error::IdNotSet));
 
-        let lines = parsed_lines("cpu foo=1 10");
-        let resp = server.write_lines("foo", &lines).await.unwrap_err();
+        let lines = parse_lines_static(&Arc::from("cpu foo=1 10"))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let resp = server.write_lines("foo", lines).await.unwrap_err();
         assert!(matches!(resp, Error::IdNotSet));
     }
 
@@ -1155,8 +1161,10 @@ mod tests {
             .unwrap();
 
         let line = "cpu bar=1 10";
-        let lines: Vec<_> = parse_lines(line).map(|l| l.unwrap()).collect();
-        server.write_lines("foo", &lines).await.unwrap();
+        let lines = parse_lines_static(&Arc::from(line))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        server.write_lines("foo", lines).await.unwrap();
 
         let db_name = DatabaseName::new("foo").unwrap();
         let db = server.db(&db_name).unwrap();
@@ -1294,16 +1302,18 @@ mod tests {
         }
 
         let line = "cpu bar=1 10";
-        let lines: Vec<_> = parse_lines(line).map(|l| l.unwrap()).collect();
+        let lines: Vec<_> = parse_lines_static(&Arc::from(line))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
 
-        let err = server.write_lines(&db_name, &lines).await.unwrap_err();
+        let err = server.write_lines(&db_name, lines.clone()).await.unwrap_err();
         assert!(
             matches!(err, Error::NoRemoteConfigured { node_group } if node_group == remote_ids)
         );
 
         // one remote is configured but it's down and we'll get connection error
         server.update_remote(bad_remote_id, BAD_REMOTE_ADDR.into());
-        let err = server.write_lines(&db_name, &lines).await.unwrap_err();
+        let err = server.write_lines(&db_name, lines.clone()).await.unwrap_err();
         assert!(matches!(
             err,
             Error::NoRemoteReachable { errors } if matches!(
@@ -1323,7 +1333,7 @@ mod tests {
         // probability both the remotes will get hit.
         for _ in 0..100 {
             server
-                .write_lines(&db_name, &lines)
+                .write_lines(&db_name, lines.clone())
                 .await
                 .expect("cannot write lines");
         }
@@ -1352,8 +1362,10 @@ mod tests {
             .unwrap();
 
         let line = "cpu bar=1 10";
-        let lines: Vec<_> = parse_lines(line).map(|l| l.unwrap()).collect();
-        server.write_lines(&db_name, &lines).await.unwrap();
+        let lines: Vec<_> = parse_lines_static(&Arc::from(line))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        server.write_lines(&db_name, lines).await.unwrap();
 
         // start the close (note this is not an async)
         let partition_key = "";
@@ -1484,10 +1496,6 @@ mod tests {
         ) -> Result<(), ConnectionManagerError> {
             unimplemented!()
         }
-    }
-
-    fn parsed_lines(lp: &str) -> Vec<ParsedLine<'_>> {
-        parse_lines(lp).map(|l| l.unwrap()).collect()
     }
 
     fn spawn_worker<M>(server: Arc<Server<M>>, token: CancellationToken) -> JoinHandle<()>

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use generated_types::{google::FieldViolation, influxdata::iox::write::v1::*};
-use influxdb_line_protocol::parse_lines;
+use influxdb_line_protocol::parse_lines_static;
 use observability_deps::tracing::debug;
 use server::{ConnectionManager, Server};
 use std::fmt::Debug;
@@ -26,10 +26,10 @@ where
         let request = request.into_inner();
 
         let db_name = request.db_name;
-        let lp_data = request.lp_data;
+        let lp_data = Arc::<str>::from(request.lp_data);
         let lp_chars = lp_data.len();
 
-        let lines = parse_lines(&lp_data)
+        let lines = parse_lines_static(&lp_data)
             .collect::<Result<Vec<_>, influxdb_line_protocol::Error>>()
             .map_err(|e| FieldViolation {
                 field: "lp_data".into(),
@@ -40,7 +40,7 @@ where
         debug!(%db_name, %lp_chars, lp_line_count, "Writing lines into database");
 
         self.server
-            .write_lines(&db_name, &lines)
+            .write_lines(&db_name, lines)
             .await
             .map_err(default_server_error_handler)?;
 

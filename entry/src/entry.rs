@@ -55,8 +55,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Converts parsed line protocol into a collection of ShardedEntry with the
 /// underlying flatbuffers bytes generated.
-pub fn lines_to_sharded_entries(
-    lines: &[ParsedLine<'_>],
+pub fn lines_to_sharded_entries<'a>(
+    lines: impl IntoIterator<Item = &'a ParsedLine<'a>>,
     sharder: Option<&impl Sharder>,
     partitioner: &impl Partitioner,
 ) -> Result<Vec<ShardedEntry>> {

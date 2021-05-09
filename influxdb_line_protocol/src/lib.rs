@@ -151,7 +151,7 @@ impl nom::error::ParseError<&str> for Error {
 ///
 /// assert_eq!(timestamp, Some(1590488773254420000));
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParsedLine<'a> {
     pub series: Series<'a>,
     pub field_set: FieldSet<'a>,
@@ -233,6 +233,7 @@ impl<'a> Display for ParsedLine<'a> {
 
 /// A `ParsedLine` that owns its data
 #[self_referencing]
+#[derive(Debug, Clone)]
 pub struct StaticParsedLine {
     data: Arc<str>,
 
@@ -257,7 +258,7 @@ impl StaticParsedLine {
 
 /// Represents the identifier of a series (measurement, tagset) for
 /// line protocol data
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Series<'a> {
     raw_input: &'a str,
     pub measurement: EscapedStr<'a>,
