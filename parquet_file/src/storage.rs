@@ -1,5 +1,6 @@
 /// This module responsible to write given data to specify object store and
 /// read them back
+use crate::utils::read_data_from_parquet_data;
 use arrow::{
     datatypes::{Schema as ArrowSchema, SchemaRef},
     error::Result as ArrowResult,
@@ -20,7 +21,7 @@ use parquet::{
         arrow_reader::ParquetFileArrowReader, parquet_to_arrow_schema, ArrowReader, ArrowWriter,
     },
     file::{
-        metadata::ParquetMetaData, reader::FileReader, serialized_reader::SerializedFileReader,
+        metadata::ParquetMetaData, reader::FileReader, serialized_reader::{SerializedFileReader, SliceableCursor},
         writer::TryClone,
     },
 };
@@ -432,34 +433,39 @@ impl Storage {
         batches: &mut Vec<Arc<RecordBatch>>,
         limit: Option<usize>,
     ) -> Result<()> {
-        // TODO: support non local file object store. Ticket #1342
-        let full_path = match (&store.0, path) {
-            (ObjectStoreIntegration::File(file_root), Path::File(location)) => {
-                file_root.path(&location)
-            }
-            (_, _) => {
-                panic!("Non local file object store not supported")
-            }
-        };
+
+        use tokio::runtime::Builder;
+        let tokio_runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let handle = tokio_runtime.handle();
+
+        let parquet_data = handle.block_on(async move {
+            Self::load_parquet_data_from_object_store(path, store).await.unwrap()
+        });
 
         let mut total_rows = 0;
 
-        let file = File::open(&full_path).context(OpenFile)?;
-        let mut file_reader = SerializedFileReader::new(file).context(SerializedFileReaderError)?;
+        let cursor = SliceableCursor::new(parquet_data.clone());
+        let mut reader = SerializedFileReader::new(cursor).unwrap();
 
         // TODO: remove these line after https://github.com/apache/arrow-rs/issues/252 is done
         // Get file level metadata to set it to the record batch's metadata below
-        let metadata = file_reader.metadata();
+        let metadata = reader.metadata();
         let schema = read_schema_from_parquet_metadata(metadata)?;
+
+
+        let actual_record_batches =
+            read_data_from_parquet_data(Arc::clone(&schema.as_arrow()), parquet_data);
 
         if let Some(predicate_builder) = predicate_builder {
             let row_group_predicate =
-                predicate_builder.build_row_group_predicate(file_reader.metadata().row_groups());
-            file_reader.filter_row_groups(&row_group_predicate); //filter out
+                predicate_builder.build_row_group_predicate(metadata.row_groups());
+            reader.filter_row_groups(&row_group_predicate); //filter out
                                                                  // row group based
                                                                  // on the predicate
         }
-        let mut arrow_reader = ParquetFileArrowReader::new(Arc::new(file_reader));
+
+        let mut arrow_reader = ParquetFileArrowReader::new(Arc::new(reader) as Arc<dyn FileReader>);
+
         let mut batch_reader = arrow_reader
             .get_record_reader_by_columns(projection.to_owned(), batch_size)
             .context(ParquetArrowReaderError)?;

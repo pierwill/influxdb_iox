@@ -14,5 +14,4 @@ pub mod storage;
 pub mod table;
 
 mod storage_testing;
-#[cfg(test)]
 pub mod utils;
