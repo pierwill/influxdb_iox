@@ -434,11 +434,13 @@ impl Storage {
         limit: Option<usize>,
     ) -> Result<()> {
 
-        use tokio::runtime::Builder;
-        let tokio_runtime = Builder::new_current_thread().enable_all().build().unwrap();
-        let handle = tokio_runtime.handle();
+        let handle = tokio::runtime::Handle::current();
+        // let parquet_data = handle.block_on(async move {
+        //     Self::load_parquet_data_from_object_store(path, store).await.unwrap()
+        // });
 
-        let parquet_data = handle.block_on(async move {
+        let _handle_guard = handle.enter();
+        let parquet_data = futures::executor::block_on(async move {
             Self::load_parquet_data_from_object_store(path, store).await.unwrap()
         });
 
