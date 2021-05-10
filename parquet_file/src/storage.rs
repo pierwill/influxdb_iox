@@ -1,15 +1,14 @@
 /// This module responsible to write given data to specify object store and
 /// read them back
-use crate::utils::read_data_from_parquet_data;
-use arrow::{datatypes::{Schema as ArrowSchema, SchemaRef}, error::{ArrowError, Result as ArrowResult}, record_batch::RecordBatch};
-use datafusion::{error::DataFusionError, physical_plan::{
+use arrow::{datatypes::{Schema as ArrowSchema, SchemaRef}, error::{Result as ArrowResult}, record_batch::RecordBatch};
+use datafusion::physical_plan::{
     common::SizedRecordBatchStream, parquet::RowGroupPredicateBuilder, RecordBatchStream,
     SendableRecordBatchStream,
-}};
+};
 use internal_types::{schema::Schema, selection::Selection};
 use object_store::{
     path::{ObjectStorePath, Path},
-    ObjectStore, ObjectStoreApi, ObjectStoreIntegration,
+    ObjectStore, ObjectStoreApi,
 };
 use parquet::{
     self,
@@ -28,11 +27,7 @@ use data_types::server_id::ServerId;
 use futures::{Stream, StreamExt, TryStreamExt};
 use parking_lot::Mutex;
 use snafu::{OptionExt, ResultExt, Snafu};
-use std::{convert::TryInto, fs::File, io::{Cursor, Seek, SeekFrom, Write}, sync::Arc, task::{Context, Poll}};
-use tokio::{
-    sync::mpsc::{channel, Receiver, Sender},
-    task,
-};
+use std::{convert::TryInto, io::{Cursor, Seek, SeekFrom, Write}, sync::Arc, task::{Context, Poll}};
 use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Debug, Snafu)]
@@ -284,28 +279,6 @@ impl Storage {
         // Limit of total rows to read
         let limit: Option<usize> = None; // Todo: this should be a parameter of the function
 
-        // TODO: These commented-out code lines will either be used or deleted when #1082 done
-        // TODO: Until this read_filter is an async, we cannot make this multi-threaded yet
-        //       because it returns wrong results if other thread rerun before full results are returned
-        // task::spawn_blocking(move || {
-        //     if let Err(e) = Self::read_file(
-        //         path,
-        //         Arc::clone(&store),
-        //         projection.as_slice(),
-        //         predicate_builder.as_ref(),
-        //         batch_size,
-        //         response_tx,
-        //         limit,
-        //     ) {
-        //         println!("Parquet reader thread terminated due to error: {:?}", e);
-        //     }
-        // });
-
-        // Ok(Box::pin(ParquetStream {
-        //     schema,  // TODO: This is not the right schem. Need to get schema of the batch
-        //     inner: ReceiverStream::new(response_rx),
-        // }))
-
         let mut batches: Vec<Arc<RecordBatch>> = vec![];
         if let Err(e) = Self::read_file(
             path,
@@ -330,114 +303,6 @@ impl Storage {
         Ok(Box::pin(SizedRecordBatchStream::new(batch_schema, batches)))
     }
 
-    // TODO notes: implemented this for #1082 but i turns out might not be able to use
-    // because needs to finish #1342 before #1082 is fully tested. Thi function will
-    // be either used or removed when #1082 is done
-    //
-    // fn send_result(
-    //     response_tx: &Sender<ArrowResult<RecordBatch>>,
-    //     result: ArrowResult<RecordBatch>,
-    // ) -> Result<()> {
-    //     // Note this function is running on its own blocking tokio thread so blocking
-    //     // here is ok.
-    //     response_tx
-    //         .blocking_send(result)
-    //         .map_err(|e| DataFusionError::Execution(e.to_string()))
-    //         .context(SendResult)?;
-    //     Ok(())
-    // }
-
-    // TODO: see the notes for send_result above
-    // fn read_file(
-    //     path: Path,
-    //     store: Arc<ObjectStore>,
-    //     projection: &[usize],
-    //     predicate_builder: Option<&RowGroupPredicateBuilder>,
-    //     batch_size: usize,
-    //     response_tx: Sender<ArrowResult<RecordBatch>>,
-    //     limit: Option<usize>,
-    // ) -> Result<()> {
-
-    //     // TODO: support non local file object store. Ticket #1342
-    //     let full_path = match (&store.0, path) {
-    //         (ObjectStoreIntegration::File(file_root), Path::File(location)) => {
-    //             file_root.path(&location)
-    //         }
-    //         (_, _) => {
-    //             panic!("Non local file object store not supported")
-    //         }
-    //     };
-    
-    //     println!("Full path filename: {:#?}", full_path);  // TOTO: to be removed after both #1082 and #1342 done
-
-    //     let mut total_rows = 0;
-
-    //     let file = File::open(&full_path).context(OpenFile)?;
-    //     let mut file_reader = SerializedFileReader::new(file).context(SerializedFileReaderError)?;
-
-    //     // TODO: remove these line after https://github.com/apache/arrow-rs/issues/252 is done
-    //     // Get file level metadata to set it to the record batch's metadata below
-    //     let metadata = file_reader.metadata();
-    //     let schema = read_schema_from_parquet_metadata(metadata)?;
-    //     println!("---------- schema: {:#?}", schema);
-
-    //     if let Some(predicate_builder) = predicate_builder {
-    //         let row_group_predicate =
-    //             predicate_builder.build_row_group_predicate(file_reader.metadata().row_groups());
-    //         file_reader.filter_row_groups(&row_group_predicate); //filter out
-    //                                                              // row group based
-    //                                                              // on the predicate
-    //     }
-    //     let mut arrow_reader = ParquetFileArrowReader::new(Arc::new(file_reader));
-    //     let mut batch_reader = arrow_reader
-    //         .get_record_reader_by_columns(projection.to_owned(), batch_size)
-    //         .context(ParquetArrowReaderError)?;
-    //     loop {
-    //         match batch_reader.next() {
-    //             Some(Ok(batch)) => {
-    //                 //println!("ParquetExec got new batch from {}", filename);
-    //                 total_rows += batch.num_rows();
-
-    //                 // TODO: remove these lines when arow-rs' ticket https://github.com/apache/arrow-rs/issues/252 is done
-    //                 // Since arrow's parquet reading does not return the row group level's metadata, the
-    //                 // work around here is to get it from the file level which is the same
-    //                 let columns = batch.columns().to_vec();
-    //                 let fields = batch.schema().fields().clone();
-    //                 let arrow_column_schema = ArrowSchema::new_with_metadata(
-    //                     fields,
-    //                     schema.as_arrow().metadata().clone(),
-    //                 );
-    //                 let new_batch = RecordBatch::try_new(Arc::new(arrow_column_schema.clone()), columns)
-    //                     .context(ReadingFile)?;
-
-    //                 println!("---------------- New batch: {:#?}", new_batch);
-
-            
-    //                 Self::send_result(&response_tx, Ok(new_batch))?;
-    //                 if limit.map(|l| total_rows >= l).unwrap_or(false) {
-    //                     break;
-    //                 }
-    //             }
-    //             None => {
-    //                 break;
-    //             }
-    //             Some(Err(e)) => {
-    //                 let err_msg =
-    //                     //format!("Error reading batch from {}: {}", filename, e.to_string());
-    //                     format!("Error reading batch: {}", e.to_string());
-    //                 // send error to operator
-    //                 Self::send_result(&response_tx, Err(ArrowError::ParquetError(err_msg)))?;
-    //                 // terminate thread with error
-    //                 return Err(e).context(ReadingFile);
-    //             }
-    //         }
-    //     }
-
-    //     // finished reading files (dropping response_tx will close
-    //     // channel)
-    //     Ok(())
-    // }
-
     // Read the given path of the parquet file and return record batches satisfied
     // the given predicate_builder
     fn read_file(
@@ -450,19 +315,16 @@ impl Storage {
         limit: Option<usize>,
     ) -> Result<()> {
 
-        use tokio::runtime::Builder;
-        let tokio_runtime = Builder::new_current_thread().enable_all().build().unwrap();
-        let handle = tokio_runtime.handle();
-
-
-        let parquet_data = handle.block_on(async move {
+        let handle = tokio::runtime::Handle::current();
+        let _handle_guard = handle.enter();
+        let parquet_data = futures::executor::block_on(async move {
             Self::load_parquet_data_from_object_store(path, store).await.unwrap()
         });
 
         let mut total_rows = 0;
 
-        let cursor = SliceableCursor::new(parquet_data.clone());
-        let mut reader = SerializedFileReader::new(cursor).unwrap();
+        let cursor = SliceableCursor::new(parquet_data);
+        let mut reader = SerializedFileReader::new(cursor).context(SerializedFileReaderError)?;
 
         // TODO: remove these line after https://github.com/apache/arrow-rs/issues/252 is done
         // Get file level metadata to set it to the record batch's metadata below
@@ -471,9 +333,9 @@ impl Storage {
         println!("------ Schema: {:#?}", schema);
 
 
-        let actual_record_batches =
-            read_data_from_parquet_data(Arc::clone(&schema.as_arrow()), parquet_data);
-        println!("----- Actual record batches: {:#?}", actual_record_batches);
+        // let actual_record_batches =
+        //     read_data_from_parquet_data(Arc::clone(&schema.as_arrow()), parquet_data);
+        // println!("----- Actual record batches: {:#?}", actual_record_batches);
 
         if let Some(predicate_builder) = predicate_builder {
             let row_group_predicate =
