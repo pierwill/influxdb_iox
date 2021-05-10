@@ -1,6 +1,10 @@
 /// This module responsible to write given data to specify object store and
 /// read them back
-use arrow::{datatypes::{Schema as ArrowSchema, SchemaRef}, error::{Result as ArrowResult}, record_batch::RecordBatch};
+use arrow::{
+    datatypes::{Schema as ArrowSchema, SchemaRef},
+    error::Result as ArrowResult,
+    record_batch::RecordBatch,
+};
 use datafusion::physical_plan::{
     common::SizedRecordBatchStream, parquet::RowGroupPredicateBuilder, RecordBatchStream,
     SendableRecordBatchStream,
@@ -16,7 +20,9 @@ use parquet::{
         arrow_reader::ParquetFileArrowReader, parquet_to_arrow_schema, ArrowReader, ArrowWriter,
     },
     file::{
-        metadata::ParquetMetaData, reader::FileReader, serialized_reader::{SerializedFileReader, SliceableCursor},
+        metadata::ParquetMetaData,
+        reader::FileReader,
+        serialized_reader::{SerializedFileReader, SliceableCursor},
         writer::TryClone,
     },
 };
@@ -27,7 +33,12 @@ use data_types::server_id::ServerId;
 use futures::{Stream, StreamExt, TryStreamExt};
 use parking_lot::Mutex;
 use snafu::{OptionExt, ResultExt, Snafu};
-use std::{convert::TryInto, io::{Cursor, Seek, SeekFrom, Write}, sync::Arc, task::{Context, Poll}};
+use std::{
+    convert::TryInto,
+    io::{Cursor, Seek, SeekFrom, Write},
+    sync::Arc,
+    task::{Context, Poll},
+};
 use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Debug, Snafu)]
@@ -257,15 +268,6 @@ impl Storage {
         path: Path,
         store: Arc<ObjectStore>,
     ) -> Result<SendableRecordBatchStream> {
-        // The below code is based on
-        // datafusion::physical_plan::parquet::ParquetExec::execute
-        // Will be improved as we go
-
-        // let (response_tx, response_rx): (
-        //     Sender<ArrowResult<RecordBatch>>,
-        //     Receiver<ArrowResult<RecordBatchThis>>,
-        // ) = channel(2);
-
         // Indices of columns in the schema needed to read
         let projection: Vec<usize> = Self::column_indices(selection, Arc::clone(&schema));
 
@@ -314,35 +316,28 @@ impl Storage {
         batches: &mut Vec<Arc<RecordBatch>>,
         limit: Option<usize>,
     ) -> Result<()> {
-
         let handle = tokio::runtime::Handle::current();
         let _handle_guard = handle.enter();
         let parquet_data = futures::executor::block_on(async move {
-            Self::load_parquet_data_from_object_store(path, store).await.unwrap()
+            Self::load_parquet_data_from_object_store(path, store).await
         });
 
         let mut total_rows = 0;
 
-        let cursor = SliceableCursor::new(parquet_data);
+        let cursor = SliceableCursor::new(parquet_data?);
         let mut reader = SerializedFileReader::new(cursor).context(SerializedFileReaderError)?;
 
         // TODO: remove these line after https://github.com/apache/arrow-rs/issues/252 is done
         // Get file level metadata to set it to the record batch's metadata below
         let metadata = reader.metadata();
         let schema = read_schema_from_parquet_metadata(metadata)?;
-        println!("------ Schema: {:#?}", schema);
-
-
-        // let actual_record_batches =
-        //     read_data_from_parquet_data(Arc::clone(&schema.as_arrow()), parquet_data);
-        // println!("----- Actual record batches: {:#?}", actual_record_batches);
 
         if let Some(predicate_builder) = predicate_builder {
             let row_group_predicate =
                 predicate_builder.build_row_group_predicate(metadata.row_groups());
             reader.filter_row_groups(&row_group_predicate); //filter out
-                                                                 // row group based
-                                                                 // on the predicate
+                                                            // row group based
+                                                            // on the predicate
         }
 
         let mut arrow_reader = ParquetFileArrowReader::new(Arc::new(reader) as Arc<dyn FileReader>);
@@ -356,8 +351,6 @@ impl Storage {
                 Some(Ok(batch)) => {
                     total_rows += batch.num_rows();
 
-                    println!("------------- batch: {:#?}", batch);
-
                     // TODO: remove these lines when arow-rs' ticket https://github.com/apache/arrow-rs/issues/252 is done
                     // Since arrow's parquet reading does not return the row group level's metadata, the
                     // work around here is to get it from the file level which is the same
@@ -369,8 +362,6 @@ impl Storage {
                     );
                     let new_batch = RecordBatch::try_new(Arc::new(arrow_column_schema), columns)
                         .context(ReadingFile)?;
-
-                    println!("------------- new_batch: {:#?}", new_batch);
 
                     batches.push(Arc::new(new_batch));
                     if limit.map(|l| total_rows >= l).unwrap_or(false) {
@@ -385,7 +376,6 @@ impl Storage {
                 }
             }
         }
-        println!("------------ total rows: {}", total_rows);
 
         Ok(())
     }
