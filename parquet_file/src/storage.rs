@@ -8,7 +8,7 @@ use arrow::{
 use datafusion::physical_plan::{
     common::SizedRecordBatchStream, parquet::RowGroupPredicateBuilder, RecordBatchStream,
     SendableRecordBatchStream,
-};
+}};
 use internal_types::{schema::Schema, selection::Selection};
 use object_store::{
     path::{ObjectStorePath, Path},
