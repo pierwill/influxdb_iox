@@ -316,8 +316,6 @@ impl Storage {
         batches: &mut Vec<Arc<RecordBatch>>,
         limit: Option<usize>,
     ) -> Result<()> {
-        let handle = tokio::runtime::Handle::current();
-        let _handle_guard = handle.enter();
         let parquet_data = futures::executor::block_on(async move {
             Self::load_parquet_data_from_object_store(path, store).await
         });

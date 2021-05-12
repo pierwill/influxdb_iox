@@ -12,6 +12,6 @@ pub mod chunk;
 pub mod metadata;
 pub mod storage;
 pub mod table;
+pub mod utils;
 
 mod storage_testing;
-pub mod utils;
