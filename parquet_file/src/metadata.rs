@@ -315,7 +315,6 @@ fn extract_iox_statistics(
             ))
         }
         (ParquetStatistics::Int64(stats), InfluxColumnType::Field(InfluxFieldType::UInteger)) => {
-            // TODO: that's very likely wrong, but blocked by https://github.com/apache/arrow-rs/issues/254
             Ok((
                 Statistics::U64(StatValues {
                     min: Some(*stats.min() as u64),
