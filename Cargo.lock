@@ -1597,6 +1597,7 @@ dependencies = [
  "ouroboros",
  "snafu",
  "test_helpers",
+ "tikv-jemallocator",
 ]
 
 [[package]]

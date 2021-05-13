@@ -1,5 +1,10 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::time::Duration;
+use std::sync::Arc;
+use tikv_jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 static LINES: &str = include_str!("../../tests/fixtures/lineproto/prometheus.lp");
 

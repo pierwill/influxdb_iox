@@ -13,6 +13,7 @@ ouroboros = "0.8.3"
 [dev-dependencies] # In alphabetical order
 criterion = "0.3.3"
 test_helpers = { path = "../test_helpers" }
+tikv-jemallocator = "0.4.0"
 
 [[bench]]
 name = "line_parser"
