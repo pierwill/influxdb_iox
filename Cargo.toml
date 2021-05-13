@@ -136,10 +136,6 @@ name = "encoders"
 harness = false
 
 [[bench]]
-name = "line_parser"
-harness = false
-
-[[bench]]
 name = "mapper"
 harness = false
 
