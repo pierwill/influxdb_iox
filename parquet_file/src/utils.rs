@@ -232,7 +232,7 @@ fn create_column_field_u64(
 
 fn create_column_field_f64(
     name: &str,
-    data: Vec<Vec<f64>>,
+    data: Vec<Vec<Option<f64>>>,
     arrow_cols: &mut Vec<Vec<(String, ArrayRef, bool)>>,
     summaries: &mut Vec<ColumnSummary>,
     schema_builder: SchemaBuilder,
@@ -253,16 +253,18 @@ fn create_column_field_f64(
             min: data
                 .iter()
                 .flatten()
+                .filter_map(|x| x.as_ref())
                 .filter(|x| !x.is_nan())
                 .min_by(|a, b| a.partial_cmp(b).unwrap())
                 .cloned(),
             max: data
                 .iter()
                 .flatten()
+                .filter_map(|x| x.as_ref())
                 .filter(|x| !x.is_nan())
                 .max_by(|a, b| a.partial_cmp(b).unwrap())
                 .cloned(),
-            count: data.iter().map(Vec::len).sum::<usize>() as u64,
+            count: data.iter().flatten().filter_map(|x| x.as_ref()).count() as u64,
         }),
     });
 
@@ -443,21 +445,33 @@ pub fn make_record_batch(
     // field: f64
     schema_builder = create_column_field_f64(
         &format!("{}_field_f64_normal", column_prefix),
-        vec![vec![10.1], vec![20.1], vec![30.1, 40.1]],
+        vec![
+            vec![Some(10.1)],
+            vec![Some(20.1)],
+            vec![Some(30.1), Some(40.1)],
+        ],
         &mut arrow_cols,
         &mut summaries,
         schema_builder,
     );
     schema_builder = create_column_field_f64(
         &format!("{}_field_f64_inf", column_prefix),
-        vec![vec![0.0], vec![f64::INFINITY], vec![f64::NEG_INFINITY, 1.0]],
+        vec![
+            vec![Some(0.0)],
+            vec![Some(f64::INFINITY)],
+            vec![Some(f64::NEG_INFINITY), Some(1.0)],
+        ],
         &mut arrow_cols,
         &mut summaries,
         schema_builder,
     );
     schema_builder = create_column_field_f64(
         &format!("{}_field_f64_zero", column_prefix),
-        vec![vec![0.0], vec![-0.0], vec![0.0, -0.0]],
+        vec![
+            vec![Some(0.0)],
+            vec![Some(-0.0)],
+            vec![Some(0.0), Some(-0.0)],
+        ],
         &mut arrow_cols,
         &mut summaries,
         schema_builder,
@@ -468,14 +482,36 @@ pub fn make_record_batch(
     assert!(nan2.is_nan());
     schema_builder = create_column_field_f64(
         &format!("{}_field_f64_nan_some", column_prefix),
-        vec![vec![nan1], vec![2.0], vec![1.0, nan2]],
+        vec![
+            vec![Some(nan1)],
+            vec![Some(2.0)],
+            vec![Some(1.0), Some(nan2)],
+        ],
         &mut arrow_cols,
         &mut summaries,
         schema_builder,
     );
     schema_builder = create_column_field_f64(
         &format!("{}_field_f64_nan_all", column_prefix),
-        vec![vec![nan1], vec![nan2], vec![nan1, nan2]],
+        vec![
+            vec![Some(nan1)],
+            vec![Some(nan2)],
+            vec![Some(nan1), Some(nan2)],
+        ],
+        &mut arrow_cols,
+        &mut summaries,
+        schema_builder,
+    );
+    schema_builder = create_column_field_f64(
+        &format!("{}_field_f64_null_some", column_prefix),
+        vec![vec![None], vec![Some(20.1)], vec![Some(30.1), None]],
+        &mut arrow_cols,
+        &mut summaries,
+        schema_builder,
+    );
+    schema_builder = create_column_field_f64(
+        &format!("{}_field_f64_null_all", column_prefix),
+        vec![vec![None], vec![None], vec![None, None]],
         &mut arrow_cols,
         &mut summaries,
         schema_builder,
