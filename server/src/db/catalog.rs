@@ -82,7 +82,7 @@ pub enum Error {
     },
 
     #[snafu(display(
-        "Internal Error: Unexpected chunk state for {}:{}:{}. Expected {}, got {}",
+        "Internal Error: Unexpected lifecycle action for {}:{}:{}. Expected {}, got {}",
         partition_key,
         table_name,
         chunk_id,

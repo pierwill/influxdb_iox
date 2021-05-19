@@ -153,6 +153,15 @@ impl DbChunk {
             _ => vec![],
         }
     }
+
+    /// Return the number of rows
+    pub fn rows(&self) -> usize {
+        match &self.state {
+            State::MutableBuffer { chunk, .. } => chunk.rows(),
+            State::ReadBuffer { chunk, .. } => chunk.rows() as usize,
+            State::ParquetFile { chunk, .. } => chunk.rows(),
+        }
+    }
 }
 
 impl PartitionChunk for DbChunk {

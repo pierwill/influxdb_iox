@@ -92,20 +92,12 @@ impl Partition {
         &mut self,
         chunk: mutable_buffer::chunk::Chunk,
     ) -> Result<Arc<RwLock<Chunk>>> {
-        let table_name: String = chunk.table_name().to_string();
-
         let table = self
             .tables
-            .entry(table_name)
+            .entry(chunk.table_name().to_string())
             .or_insert_with(PartitionTable::new);
 
-        let chunk_id = table.next_chunk_id;
-
-        // Technically this only causes an issue on the next upsert but
-        // the MUB treats u32::MAX as a sentinel value
-        assert_ne!(table.next_chunk_id, u32::MAX, "Chunk ID Overflow");
-
-        table.next_chunk_id += 1;
+        let chunk_id = table.next_chunk_id();
 
         let chunk = Arc::new(self.metrics.new_lock(Chunk::new_open(
             chunk_id,
@@ -150,6 +142,7 @@ impl Partition {
             .tables
             .entry(table_name.clone())
             .or_insert_with(PartitionTable::new);
+
         match table.chunks.insert(chunk_id, Arc::clone(&chunk)) {
             Some(_) => Err(Error::ChunkAlreadyExists {
                 partition_key: self.key.clone(),
@@ -163,6 +156,30 @@ impl Partition {
                 Ok(chunk)
             }
         }
+    }
+
+    /// Create a new chunk in the read buffer
+    pub fn create_read_buffer_chunk(&mut self, table_name: &str, chunk: read_buffer::Chunk) -> Result<Arc<RwLock<Chunk>>> {
+        let table = self
+            .tables
+            .entry(table_name.to_string())
+            .or_insert_with(PartitionTable::new);
+
+        let chunk_id = table.next_chunk_id();
+
+        let chunk = Arc::new(self.metrics.new_lock(Chunk::new_read_buffer(
+            chunk_id,
+            &self.key,
+            Arc::new(chunk),
+            self.metrics.new_chunk_metrics(),
+        )));
+
+        if table.chunks.insert(chunk_id, Arc::clone(&chunk)).is_some() {
+            // A fundamental invariant has been violated - abort
+            panic!("chunk already existed with id {}", chunk_id)
+        }
+
+        Ok(chunk)
     }
 
     /// Drop the specified chunk
@@ -302,5 +319,13 @@ impl PartitionTable {
             next_chunk_id: 0,
             chunks: BTreeMap::new(),
         }
+    }
+
+    fn next_chunk_id(&mut self) -> u32 {
+        let chunk_id = self.next_chunk_id;
+        assert_ne!(self.next_chunk_id, u32::MAX, "Chunk ID Overflow");
+
+        self.next_chunk_id += 1;
+        chunk_id
     }
 }

@@ -236,7 +236,7 @@ impl Executor {
         self.run_logical_plans(vec![plan]).await
     }
 
-    /// Executes the logical plan using DataFusion on a separate
+    /// Executes the physical plan using DataFusion on a separate
     /// thread pool and produces RecordBatches
     pub async fn collect(&self, physical_plan: Arc<dyn ExecutionPlan>) -> Result<Vec<RecordBatch>> {
         self.new_context()

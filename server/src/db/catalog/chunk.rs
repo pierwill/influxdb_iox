@@ -18,6 +18,8 @@ use tracker::{TaskRegistration, TaskTracker};
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ChunkLifecycleAction {
     /// Chunk is in the process of being moved to the read buffer
+    ///
+    /// TODO: Remove this - moving is just a special form of compaction
     Moving,
 
     /// Chunk is in the process of being written to object storage
@@ -32,7 +34,7 @@ impl ChunkLifecycleAction {
         match self {
             Self::Moving => "Moving to the Read Buffer",
             Self::Persisting => "Persisting to Object Storage",
-            Self::Compacting => "Compacting",
+            Self::Compacting => "Compacting to the Read Buffer",
         }
     }
 }
@@ -158,7 +160,6 @@ impl Chunk {
     /// Returns an error if the provided chunk is empty, otherwise creates a new open chunk and records a write at the
     /// current time.
     ///
-    /// Apart from [`new_object_store_only`](Self::new_object_store_only) this is the only way to create new chunks.
     pub(crate) fn new_open(
         chunk_id: u32,
         partition_key: impl AsRef<str>,
@@ -196,9 +197,42 @@ impl Chunk {
         Ok(chunk)
     }
 
+    /// Creates a new chunk that exists in the read buffer
+    pub(crate) fn new_read_buffer(
+        chunk_id: u32,
+        partition_key: impl AsRef<str>,
+        chunk: Arc<read_buffer::Chunk>,
+        metrics: ChunkMetrics,
+    ) -> Self {
+        // workaround until https://github.com/influxdata/influxdb_iox/issues/1295 is fixed
+        let table_name = Arc::from(
+            chunk
+                .table_names(&Default::default(), &Default::default())
+                .into_iter()
+                .next()
+                .expect("chunk must have exactly 1 table")
+                .as_ref(),
+        );
+        let table_summaries = chunk.table_summaries();
+        let table_summary = table_summaries.into_iter().next().unwrap();
+        let state = ChunkState::Moved(chunk);
+
+        Self {
+            partition_key: Arc::from(partition_key.as_ref()),
+            table_name,
+            id: chunk_id,
+            state,
+            lifecycle_action: None,
+            metrics,
+            table_summary: Some(Arc::new(table_summary)),
+            time_of_first_write: None,
+            time_of_last_write: None,
+            time_closed: None,
+        }
+    }
+
     /// Creates a new chunk that is only registered via an object store reference (= only exists in parquet).
     ///
-    /// Apart from [`new_open`](Self::new_open) this is the only way to create new chunks.
     pub(crate) fn new_object_store_only(
         chunk_id: u32,
         partition_key: impl AsRef<str>,
@@ -549,6 +583,19 @@ impl Chunk {
                 unexpected_state!(self, "setting unload", "WrittenToObjectStore", &self.state)
             }
         }
+    }
+
+    pub fn set_compacting(&mut self, registration: &TaskRegistration) -> Result<()> {
+        match &self.state {
+            ChunkState::Moved(_) | ChunkState::Closed(_) => {
+                self.set_lifecycle_action(ChunkLifecycleAction::Compacting, registration)
+            }
+            state => unexpected_state!(self, "setting merging", "Closed or Moved", state),
+        }
+    }
+
+    pub fn abort_compacting(&mut self) -> Result<()> {
+        self.finish_lifecycle_action(ChunkLifecycleAction::Compacting)
     }
 
     /// Set the chunk's in progress lifecycle action or return an error if already in-progress

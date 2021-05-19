@@ -21,7 +21,7 @@ use datafusion::{
     physical_plan::SendableRecordBatchStream,
 };
 use entry::{Entry, OwnedSequencedEntry, SequencedEntry};
-use internal_types::{arrow::sort::sort_record_batch, selection::Selection};
+use internal_types::selection::Selection;
 use lifecycle::LifecycleManager;
 use metrics::{KeyValue, MetricRegistry};
 use mutable_buffer::chunk::{
@@ -39,8 +39,9 @@ use parquet_file::{
     },
     storage::Storage,
 };
+use query::frontend::lifecycle::LifecyclePlanner;
 use query::predicate::{Predicate, PredicateBuilder};
-use query::{exec::Executor, Database, DEFAULT_SCHEMA};
+use query::{exec, exec::Executor, Database, DEFAULT_SCHEMA};
 use read_buffer::{Chunk as ReadBufferChunk, ChunkMetrics as ReadBufferChunkMetrics};
 use snafu::{ResultExt, Snafu};
 use std::{
@@ -92,17 +93,29 @@ pub enum Error {
     },
 
     #[snafu(display(
-        "Can not drop chunk {}:{}:{} which has an in-progress lifecycle action {}. Wait for this to complete",
+        "A lifecycle action {} is already in progress for {}:{}:{}. Wait for this to complete",
+        action,
         partition_key,
         table_name,
         chunk_id,
-        action
     ))]
-    DropMovingChunk {
+    LifecycleActionInProgress {
         partition_key: String,
         table_name: String,
         chunk_id: u32,
         action: String,
+    },
+
+    #[snafu(display(
+        "Chunk not in read buffer {}:{}:{}",
+        partition_key,
+        table_name,
+        chunk_id
+    ))]
+    ChunkNotInReadBuffer {
+        partition_key: String,
+        table_name: String,
+        chunk_id: u32,
     },
 
     #[snafu(display(
@@ -164,8 +177,11 @@ pub enum Error {
         source: parquet_file::storage::Error,
     },
 
-    #[snafu(display("Unknown Mutable Buffer Chunk {}", chunk_id))]
-    UnknownMutableBufferChunk { chunk_id: u32 },
+    #[snafu(display("Error merging chunks: {}", source))]
+    MergingChunks { source: catalog::Error },
+
+    #[snafu(display("Error executing plan: {}", source))]
+    ExecutionError { source: exec::Error },
 
     #[snafu(display("Cannot write to this database: no mutable buffer configured"))]
     DatabaseNotWriteable {},
@@ -194,11 +210,6 @@ pub enum Error {
 
     #[snafu(display("Error building sequenced entry: {}", source))]
     SequencedEntryError { source: entry::Error },
-
-    #[snafu(display("Error building sequenced entry: {}", source))]
-    SchemaConversion {
-        source: internal_types::schema::Error,
-    },
 
     #[snafu(display("Error sending Sequenced Entry to Write Buffer: {}", source))]
     WriteBufferError { source: buffer::Error },
@@ -516,7 +527,7 @@ impl Db {
             // weren't prevented from dropping chunks due to
             // background tasks
             if let Some(lifecycle_action) = chunk.lifecycle_action() {
-                return DropMovingChunk {
+                return LifecycleActionInProgress {
                     partition_key,
                     table_name,
                     chunk_id,
@@ -546,7 +557,7 @@ impl Db {
     /// This (async) function returns when this process is complete,
     /// but the process may take a long time
     ///
-    /// Returns a handle to the newly loaded chunk in the read buffer
+    /// Returns the chunk ID of the new chunk
     pub async fn load_chunk_to_read_buffer(
         &self,
         partition_key: &str,
@@ -554,82 +565,150 @@ impl Db {
         chunk_id: u32,
         tracker: &TaskRegistration,
     ) -> Result<Arc<DbChunk>> {
-        let chunk = {
-            let partition = self
-                .catalog
-                .state()
-                .valid_partition(partition_key)
-                .context(LoadingChunk {
-                    partition_key,
-                    table_name,
-                    chunk_id,
-                })?;
+        let chunks = self
+            .compact_chunks(partition_key, table_name, &[chunk_id], 1, tracker)
+            .await?;
+
+        assert_eq!(chunks.len(), 1, "compaction yielded too many chunks");
+
+        Ok(chunks.into_iter().next().unwrap())
+    }
+
+    /// Takes a list of chunk IDs within a given table and partition
+    ///
+    /// It will then compact them into `output_chunks` new non-overlapping chunks
+    /// and swap these into the catalog, dropping the old chunks
+    ///
+    /// Returns the chunk IDs of t
+    pub async fn compact_chunks(
+        &self,
+        partition_key: &str,
+        table_name: &str,
+        chunk_ids: &[u32],
+        output_chunks: usize,
+        tracker: &TaskRegistration,
+    ) -> Result<Vec<Arc<DbChunk>>> {
+        let partition = self
+            .catalog
+            .state()
+            .valid_partition(partition_key)
+            .context(MergingChunks)?;
+
+        let catalog_chunks: Vec<_> = {
             let partition = partition.read();
 
+            let mut chunks = chunk_ids
+                .iter()
+                .cloned()
+                .map(|chunk_id| {
+                    Ok((
+                        chunk_id,
+                        partition
+                            .chunk(table_name, chunk_id)
+                            .context(MergingChunks)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // Sort by chunk ID to ensure locks acquired in consistent order
+            chunks.sort_by_key(|(chunk_id, _)| *chunk_id);
+            chunks
+        };
+
+        let db_chunks = {
+            // Acquire write locks on the chunks
+            let mut chunk_locks: Vec<_> = catalog_chunks
+                .iter()
+                .map(|(_, chunk)| chunk.write())
+                .collect();
+
+            // The index up to which compacting has been set
+            let mut set_idx = 0;
+            let mut total_rows = 0;
+
+            // Iterate through chunks setting a compaction as in progress
+            let maybe_chunks = chunk_locks
+                .iter_mut()
+                .map(|chunk| {
+                    chunk.set_compacting(tracker).context(MergingChunks)?;
+                    let summary = chunk.table_summary();
+
+                    set_idx += 1;
+
+                    let snapshot = DbChunk::snapshot(chunk);
+                    total_rows += snapshot.rows();
+
+                    Ok((snapshot, summary))
+                })
+                .collect::<Result<Vec<_>, _>>();
+
+            // On error need to abort the lifecycle action on any set chunks
+            match maybe_chunks {
+                Ok(chunks) => chunks,
+                Err(e) => {
+                    for chunk in chunk_locks.iter_mut().take(set_idx) {
+                        chunk
+                            .abort_compacting()
+                            .expect("failed to abort chunk compaction");
+                    }
+                    return Err(e);
+                }
+            }
+        };
+
+        let planner = LifecyclePlanner::new();
+        // TODO: Error Handling
+        let plan = planner
+            .compact_chunks(table_name, db_chunks, output_chunks)
+            .unwrap();
+
+        let merged = self
+            .executor()
+            .collect(plan)
+            .await
+            .context(ExecutionError)?;
+
+        let new_chunks: Vec<_> = merged
+            .into_iter()
+            .map(|batch| {
+                let metrics = self
+                    .metrics_registry
+                    .register_domain_with_labels("read_buffer", self.metric_labels.clone());
+
+                let mut rb_chunk = ReadBufferChunk::new(ReadBufferChunkMetrics::new(
+                    &metrics,
+                    self.catalog.state().metrics().memory().read_buffer(),
+                ));
+                rb_chunk.upsert_table(table_name, batch);
+                rb_chunk
+            })
+            .collect();
+
+        let mut partition = partition.write();
+        let new_chunks = new_chunks
+            .into_iter()
+            .map(|chunk| {
+                let chunk = partition
+                    .create_read_buffer_chunk(table_name, chunk)
+                    .context(MergingChunks)?;
+                let chunk = chunk.read();
+                Ok(DbChunk::snapshot(&chunk))
+            })
+            .collect::<Result<_>>()?;
+
+        for chunk_id in chunk_ids {
+            // This should be infallible as the active lifecycle action should prevent
+            // anything from mutating the chunk
             partition
-                .chunk(table_name, chunk_id)
-                .context(LoadingChunk {
-                    partition_key,
-                    table_name,
-                    chunk_id,
-                })?
-        };
+                .drop_chunk(table_name, *chunk_id)
+                .expect("failed to drop merged chunk");
+        }
 
-        // update the catalog to say we are processing this chunk and
-        // then drop the lock while we do the work
-        let (mb_chunk, table_summary) = {
-            let mut chunk = chunk.write();
-
-            let mb_chunk = chunk.set_moving(tracker).context(LoadingChunk {
-                partition_key,
-                table_name,
-                chunk_id,
-            })?;
-            (mb_chunk, chunk.table_summary())
-        };
-
-        info!(%partition_key, %table_name, %chunk_id, "chunk marked MOVING, loading tables into read buffer");
-
-        // create a new read buffer chunk with memory tracking
-        let metrics = self
-            .metrics_registry
-            .register_domain_with_labels("read_buffer", self.metric_labels.clone());
-        let mut rb_chunk = ReadBufferChunk::new(ReadBufferChunkMetrics::new(
-            &metrics,
-            self.catalog.state().metrics().memory().read_buffer(),
-        ));
-
-        // load table into the new chunk one by one.
-        debug!(%partition_key, %table_name, %chunk_id, table=%table_summary.name, "loading table to read buffer");
-        let batch = mb_chunk
-            .read_filter(table_name, Selection::All)
-            // It is probably reasonable to recover from this error
-            // (reset the chunk state to Open) but until that is
-            // implemented (and tested) just panic
-            .expect("Loading chunk to mutable buffer");
-
-        let sorted = sort_record_batch(batch).expect("failed to sort");
-        rb_chunk.upsert_table(&table_summary.name, sorted);
-
-        // Relock the chunk again (nothing else should have been able
-        // to modify the chunk state while we were moving it
-        let mut chunk = chunk.write();
-
-        // update the catalog to say we are done processing
-        chunk.set_moved(Arc::new(rb_chunk)).context(LoadingChunk {
-            partition_key,
-            table_name,
-            chunk_id,
-        })?;
-
-        debug!(%partition_key, %table_name, %chunk_id, "chunk marked MOVED. loading complete");
-
-        Ok(DbChunk::snapshot(&chunk))
+        Ok(new_chunks)
     }
 
     /// Write given table of a given chunk to object store.
     /// The writing only happen if that chunk already in read buffer
-
     pub async fn write_chunk_to_object_store(
         &self,
         partition_key: &str,
@@ -688,11 +767,9 @@ impl Db {
         let table_name = table_summary.name.as_str();
         debug!(%partition_key, %table_name, %chunk_id, table=table_name, "loading table to object store");
 
-        let predicate = read_buffer::Predicate::default();
-
         // Get RecordBatchStream of data from the read buffer chunk
         let read_results = rb_chunk
-            .read_filter(table_name, predicate, Selection::All)
+            .read_filter(table_name, Default::default(), Selection::All)
             .context(ReadBufferChunkError {
                 table_name,
                 chunk_id,
