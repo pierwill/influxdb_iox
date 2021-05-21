@@ -1,10 +1,7 @@
 //! This module contains the main IOx Database object which has the
 //! instances of the mutable buffer, read buffer, and object store
 
-use super::{
-    buffer::{self, Buffer},
-    JobRegistry,
-};
+use super::JobRegistry;
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use async_trait::async_trait;
 use catalog::{chunk::Chunk as CatalogChunk, Catalog};
@@ -20,7 +17,7 @@ use datafusion::{
     catalog::{catalog::CatalogProvider, schema::SchemaProvider},
     physical_plan::SendableRecordBatchStream,
 };
-use entry::{Entry, OwnedSequencedEntry, SequencedEntry};
+use entry::Entry;
 use internal_types::{arrow::sort::sort_record_batch, selection::Selection};
 use lifecycle::LifecycleManager;
 use metrics::{KeyValue, MetricRegistry};
@@ -29,7 +26,7 @@ use mutable_buffer::chunk::{
 };
 use object_store::{path::parsed::DirsAndFileName, ObjectStore};
 use observability_deps::tracing::{debug, error, info};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use parquet_file::{
     catalog::{CatalogParquetInfo, CatalogState, PreservedCatalog},
     chunk::{Chunk as ParquetChunk, ChunkMetrics as ParquetChunkMetrics},
@@ -200,9 +197,6 @@ pub enum Error {
         source: internal_types::schema::Error,
     },
 
-    #[snafu(display("Error sending Sequenced Entry to Write Buffer: {}", source))]
-    WriteBufferError { source: buffer::Error },
-
     #[snafu(display("Error while handling transaction on preserved catalog: {}", source))]
     TransactionError {
         source: parquet_file::catalog::Error,
@@ -287,11 +281,6 @@ pub struct Db {
     ///    compressed form for small footprint and fast query execution; and
     ///  - The Parquet Buffer where chunks are backed by Parquet file data.
     catalog: PreservedCatalog<Catalog>,
-
-    /// The Write Buffer holds sequenced entries in an append in-memory
-    /// buffer. This buffer is used for sending data to subscribers
-    /// and to persist segments in object storage for recovery.
-    pub write_buffer: Option<Mutex<Buffer>>,
 
     /// A handle to the global jobs registry for long running tasks
     jobs: Arc<JobRegistry>,
@@ -405,7 +394,6 @@ impl Db {
         server_id: ServerId,
         object_store: Arc<ObjectStore>,
         exec: Arc<Executor>,
-        write_buffer: Option<Buffer>,
         jobs: Arc<JobRegistry>,
         preserved_catalog: PreservedCatalog<Catalog>,
     ) -> Self {
@@ -414,7 +402,6 @@ impl Db {
         let rules = RwLock::new(rules);
         let server_id = server_id;
         let store = Arc::clone(&object_store);
-        let write_buffer = write_buffer.map(Mutex::new);
         let system_tables =
             SystemSchemaProvider::new(&db_name, preserved_catalog.state(), Arc::clone(&jobs));
         let system_tables = Arc::new(system_tables);
@@ -429,7 +416,6 @@ impl Db {
             store,
             exec,
             catalog: preserved_catalog,
-            write_buffer,
             jobs,
             metrics_registry,
             system_tables,
@@ -958,43 +944,8 @@ impl Db {
         info!("finished background worker");
     }
 
-    /// Stores an entry based on the configuration. The Entry will first be
-    /// converted into a `SequencedEntry` with the logical clock assigned
-    /// from the database, and then the `SequencedEntry` will be passed to
-    /// `store_sequenced_entry`.
+    /// Stores an entry based on the configuration.
     pub fn store_entry(&self, entry: Entry) -> Result<()> {
-        let sequenced_entry = Arc::new(
-            OwnedSequencedEntry::new_from_entry_bytes(
-                self.process_clock.next(),
-                self.server_id,
-                entry.data(),
-            )
-            .context(SequencedEntryError)?,
-        );
-
-        self.store_sequenced_entry(sequenced_entry)
-    }
-
-    /// Given a `SequencedEntry`:
-    ///
-    /// - If the write buffer is configured, write the `SequencedEntry` into the buffer, which
-    ///   will replicate the `SequencedEntry` based on the configured rules.
-    /// - If the mutable buffer is configured, the `SequencedEntry` is then written into the
-    ///   mutable buffer.
-    ///
-    /// Note that if the write buffer is configured but there is an error storing the
-    /// `SequencedEntry` in the write buffer, the `SequencedEntry` will *not* reach the mutable
-    /// buffer.
-    pub fn store_sequenced_entry(&self, sequenced_entry: Arc<dyn SequencedEntry>) -> Result<()> {
-        // Send to the write buffer, if configured
-        if let Some(wb) = &self.write_buffer {
-            wb.lock()
-                .append(Arc::clone(&sequenced_entry))
-                .context(WriteBufferError)?;
-        }
-
-        // Send to the mutable buffer
-
         let rules = self.rules.read();
         let mutable_size_threshold = rules.lifecycle_rules.mutable_size_threshold;
         if rules.lifecycle_rules.immutable {
@@ -1009,7 +960,9 @@ impl Db {
 
         // TODO: Direct writes to closing chunks
 
-        if let Some(partitioned_writes) = sequenced_entry.partition_writes() {
+        let process_clock = self.process_clock.next();
+
+        if let Some(partitioned_writes) = entry.partition_writes() {
             for write in partitioned_writes {
                 let partition_key = write.key();
                 let partition = self.catalog.state().get_or_create_partition(partition_key);
@@ -1027,11 +980,7 @@ impl Db {
                                 chunk.mutable_buffer().expect("cannot mutate open chunk");
 
                             mb_chunk
-                                .write_table_batch(
-                                    sequenced_entry.clock_value(),
-                                    sequenced_entry.server_id(),
-                                    table_batch,
-                                )
+                                .write_table_batch(process_clock, self.server_id, table_batch)
                                 .context(WriteEntry {
                                     partition_key,
                                     chunk_id,
@@ -1053,11 +1002,7 @@ impl Db {
                             );
 
                             mb_chunk
-                                .write_table_batch(
-                                    sequenced_entry.clock_value(),
-                                    sequenced_entry.server_id(),
-                                    table_batch,
-                                )
+                                .write_table_batch(process_clock, self.server_id, table_batch)
                                 .context(WriteEntryInitial { partition_key })?;
 
                             let new_chunk = partition
@@ -2648,15 +2593,6 @@ mod tests {
             try_write_lp(db.as_ref(), "cpu bar=2 20"),
             Err(super::Error::HardLimitReached {})
         ));
-    }
-
-    #[tokio::test]
-    async fn write_goes_to_write_buffer_if_configured() {
-        let db = Arc::new(TestDb::builder().write_buffer(true).build().await.db);
-
-        assert_eq!(db.write_buffer.as_ref().unwrap().lock().size(), 0);
-        write_lp(db.as_ref(), "cpu bar=1 10");
-        assert_ne!(db.write_buffer.as_ref().unwrap().lock().size(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

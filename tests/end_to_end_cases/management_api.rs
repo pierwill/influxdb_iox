@@ -1,5 +1,5 @@
 use generated_types::{
-    google::protobuf::{Duration, Empty},
+    google::protobuf::Empty,
     influxdata::iox::management::v1::{database_rules::RoutingRules, *},
 };
 use influxdb_iox_client::{management::CreateDatabaseError, operations, write::WriteError};
@@ -203,16 +203,6 @@ async fn test_create_get_update_database() {
             parts: vec![partition_template::Part {
                 part: Some(partition_template::part::Part::Table(Empty {})),
             }],
-        }),
-        write_buffer_config: Some(WriteBufferConfig {
-            buffer_size: 24,
-            segment_size: 2,
-            buffer_rollover: write_buffer_config::Rollover::DropIncoming as _,
-            persist_segments: true,
-            close_segment_after: Some(Duration {
-                seconds: 324,
-                nanos: 2,
-            }),
         }),
         lifecycle_rules: Some(LifecycleRules {
             buffer_size_hard: 553,
