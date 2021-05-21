@@ -7,9 +7,8 @@ use crate::{
 };
 use data_types::{
     partition_metadata::{ColumnSummary, InfluxDbType},
-    server_id::ServerId,
 };
-use entry::{self, ClockValue};
+use entry::{self, EntrySequence};
 use internal_types::{
     schema::{builder::SchemaBuilder, InfluxColumnType, Schema},
     selection::Selection,
@@ -135,8 +134,7 @@ impl Table {
     pub fn write_columns(
         &mut self,
         dictionary: &mut Dictionary,
-        _clock_value: ClockValue,
-        _server_id: ServerId,
+        _entry_sequence: EntrySequence,
         columns: Vec<entry::Column<'_>>,
     ) -> Result<()> {
         let row_count_before_insert = self.row_count();
@@ -345,7 +343,8 @@ impl<'a> TableColSelection<'a> {
 mod tests {
     use super::*;
     use arrow::datatypes::DataType as ArrowDataType;
-    use entry::test_helpers::lp_to_entry;
+    use data_types::server_id::ServerId;
+    use entry::{ClockValue, test_helpers::lp_to_entry};
     use internal_types::schema::{InfluxColumnType, InfluxFieldType};
     use std::convert::TryFrom;
 
@@ -433,14 +432,14 @@ mod tests {
         let mut table = Table::new(dictionary.lookup_value_or_insert("foo"));
         let server_id = ServerId::try_from(1).unwrap();
         let clock_value = ClockValue::try_from(5).unwrap();
+        let entry_sequence = EntrySequence::new_from_process_clock(clock_value, server_id);
 
         let lp = "foo,t1=asdf iv=1i,uv=1u,fv=1.0,bv=true,sv=\"hi\" 1";
         let entry = lp_to_entry(&lp);
         table
             .write_columns(
                 &mut dictionary,
-                clock_value,
-                server_id,
+                entry_sequence,
                 entry
                     .partition_writes()
                     .unwrap()
@@ -458,8 +457,7 @@ mod tests {
         let response = table
             .write_columns(
                 &mut dictionary,
-                clock_value,
-                server_id,
+                entry_sequence,
                 entry
                     .partition_writes()
                     .unwrap()
@@ -492,8 +490,7 @@ mod tests {
         let response = table
             .write_columns(
                 &mut dictionary,
-                clock_value,
-                server_id,
+                entry_sequence,
                 entry
                     .partition_writes()
                     .unwrap()
@@ -526,8 +523,7 @@ mod tests {
         let response = table
             .write_columns(
                 &mut dictionary,
-                clock_value,
-                server_id,
+                entry_sequence,
                 entry
                     .partition_writes()
                     .unwrap()
@@ -560,8 +556,7 @@ mod tests {
         let response = table
             .write_columns(
                 &mut dictionary,
-                clock_value,
-                server_id,
+                entry_sequence,
                 entry
                     .partition_writes()
                     .unwrap()
@@ -594,8 +589,7 @@ mod tests {
         let response = table
             .write_columns(
                 &mut dictionary,
-                clock_value,
-                server_id,
+                entry_sequence,
                 entry
                     .partition_writes()
                     .unwrap()
@@ -628,8 +622,7 @@ mod tests {
         let response = table
             .write_columns(
                 &mut dictionary,
-                clock_value,
-                server_id,
+                entry_sequence,
                 entry
                     .partition_writes()
                     .unwrap()
@@ -662,6 +655,9 @@ mod tests {
     fn write_lines_to_table(table: &mut Table, dictionary: &mut Dictionary, lp_lines: Vec<&str>) {
         let lp_data = lp_lines.join("\n");
         let entry = lp_to_entry(&lp_data);
+        let server_id = ServerId::try_from(1).unwrap();
+        let clock_value = ClockValue::try_from(5).unwrap();
+        let entry_sequence = EntrySequence::new_from_process_clock(clock_value, server_id);
 
         for batch in entry
             .partition_writes()
@@ -673,8 +669,7 @@ mod tests {
             table
                 .write_columns(
                     dictionary,
-                    ClockValue::try_from(5).unwrap(),
-                    ServerId::try_from(1).unwrap(),
+                    entry_sequence,
                     batch.columns(),
                 )
                 .unwrap();

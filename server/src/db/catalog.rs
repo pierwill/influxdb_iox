@@ -359,7 +359,7 @@ impl SchemaProvider for Catalog {
 mod tests {
     use super::*;
     use data_types::server_id::ServerId;
-    use entry::{test_helpers::lp_to_entry, ClockValue};
+    use entry::{test_helpers::lp_to_entry, ClockValue, EntrySequence};
     use query::predicate::PredicateBuilder;
     use std::convert::TryFrom;
 
@@ -373,10 +373,13 @@ mod tests {
             mutable_buffer::chunk::ChunkMetrics::new_unregistered(),
         );
 
+        let server_id = ServerId::try_from(1).unwrap();
+        let clock_value = ClockValue::try_from(5).unwrap();
+        let entry_sequence = EntrySequence::new_from_process_clock(clock_value, server_id);
+
         mb_chunk
             .write_table_batch(
-                ClockValue::try_from(5).unwrap(),
-                ServerId::try_from(1).unwrap(),
+                entry_sequence,
                 batch,
             )
             .unwrap();

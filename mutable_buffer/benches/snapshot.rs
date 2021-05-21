@@ -2,7 +2,7 @@ use std::{convert::TryFrom, io::Read};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use data_types::server_id::ServerId;
-use entry::{test_helpers::lp_to_entries, ClockValue};
+use entry::{test_helpers::lp_to_entries, ClockValue, EntrySequence};
 use flate2::read::GzDecoder;
 use mutable_buffer::chunk::{Chunk, ChunkMetrics};
 
@@ -20,14 +20,17 @@ fn chunk(count: usize) -> Chunk {
     let mut lp = String::new();
     gz.read_to_string(&mut lp).unwrap();
 
+    let server_id = ServerId::try_from(1).unwrap();
+    let clock_value = ClockValue::try_from(5).unwrap();
+    let entry_sequence = EntrySequence::new_from_process_clock(clock_value, server_id);
+
     for _ in 0..count {
         for entry in lp_to_entries(&lp) {
             for write in entry.partition_writes().iter().flatten() {
                 for batch in write.table_batches() {
                     chunk
                         .write_table_batch(
-                            ClockValue::try_from(5).unwrap(),
-                            ServerId::try_from(1).unwrap(),
+                            entry_sequence,
                             batch,
                         )
                         .unwrap();

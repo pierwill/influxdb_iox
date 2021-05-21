@@ -5,7 +5,7 @@ use snafu::{ResultExt, Snafu};
 
 use arrow::record_batch::RecordBatch;
 use data_types::{partition_metadata::TableSummary, server_id::ServerId};
-use entry::{ClockValue, TableBatch};
+use entry::{ClockValue, TableBatch, EntrySequence};
 use internal_types::selection::Selection;
 
 use crate::chunk::snapshot::ChunkSnapshot;
@@ -115,8 +115,7 @@ impl Chunk {
     /// Panics if the batch specifies a different name for the table in this Chunk
     pub fn write_table_batch(
         &mut self,
-        clock_value: ClockValue,
-        server_id: ServerId,
+        entry_sequence: EntrySequence,
         batch: TableBatch<'_>,
     ) -> Result<()> {
         let table_name = batch.name();
@@ -128,7 +127,7 @@ impl Chunk {
 
         let columns = batch.columns();
         self.table
-            .write_columns(&mut self.dictionary, clock_value, server_id, columns)
+            .write_columns(&mut self.dictionary, entry_sequence, columns)
             .context(TableWrite { table_name })?;
 
         // Invalidate chunk snapshot
@@ -259,8 +258,8 @@ pub mod test_helpers {
 
             for batch in table_batches {
                 chunk.write_table_batch(
-                    ClockValue::try_from(5).unwrap(),
-                    ServerId::try_from(1).unwrap(),
+                    EntrySequence::new_from_process_clock(ClockValue::try_from(5).unwrap(),
+                    ServerId::try_from(1).unwrap()),
                     batch,
                 )?;
             }

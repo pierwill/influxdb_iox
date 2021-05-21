@@ -8,7 +8,10 @@ use flatbuffers::{FlatBufferBuilder, Follow, ForwardsUOffset, Vector, VectorIter
 use ouroboros::self_referencing;
 use snafu::{OptionExt, ResultExt, Snafu};
 
-use data_types::database_rules::{Error as DataError, Partitioner, ShardId, Sharder};
+use data_types::{
+    server_id::ServerId,
+    database_rules::{Error as DataError, Partitioner, ShardId, Sharder},
+};
 use influxdb_line_protocol::{FieldValue, ParsedLine};
 use internal_types::schema::{InfluxColumnType, InfluxFieldType, TIME_COLUMN_NAME};
 
@@ -1193,6 +1196,22 @@ pub struct ClockValueError(InnerClockValueError);
 enum InnerClockValueError {
     #[snafu(display("Clock values must not be zero"))]
     ValueMayNotBeZero,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum EntrySequence {
+    ProcessClock { clock_value: ClockValue, server_id: ServerId },
+    // TODO: Kafka partition and offset
+    // Kafka { partition: i32, offset: i64 }
+}
+
+impl EntrySequence {
+    pub fn new_from_process_clock(clock_value: ClockValue, server_id: ServerId) -> Self {
+        Self::ProcessClock {
+            clock_value,
+            server_id,
+        }
+    }
 }
 
 pub mod test_helpers {
