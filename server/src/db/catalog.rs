@@ -359,12 +359,16 @@ impl SchemaProvider for Catalog {
 mod tests {
     use super::*;
     use data_types::server_id::ServerId;
-    use entry::{test_helpers::lp_to_entry, ClockValue};
+    use entry::{test_helpers::lp_to_entry, ClockValue, WriteMetadata};
     use query::predicate::PredicateBuilder;
     use std::convert::TryFrom;
 
     fn create_open_chunk(partition: &Arc<RwLock<Partition>>, table: &str) {
         let entry = lp_to_entry(&format!("{} bar=1 10", table));
+        let write_metadata = WriteMetadata::LogicalClock {
+            process_clock: ClockValue::try_from(5).unwrap(),
+            server_id: ServerId::try_from(1).unwrap(),
+        };
         let write = entry.partition_writes().unwrap().remove(0);
         let batch = write.table_batches().remove(0);
         let mut partition = partition.write();
@@ -373,13 +377,7 @@ mod tests {
             mutable_buffer::chunk::ChunkMetrics::new_unregistered(),
         );
 
-        mb_chunk
-            .write_table_batch(
-                ClockValue::try_from(5).unwrap(),
-                ServerId::try_from(1).unwrap(),
-                batch,
-            )
-            .unwrap();
+        mb_chunk.write_table_batch(write_metadata, batch).unwrap();
 
         partition.create_open_chunk(mb_chunk).unwrap();
     }

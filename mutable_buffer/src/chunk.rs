@@ -5,7 +5,7 @@ use snafu::{ResultExt, Snafu};
 
 use arrow::record_batch::RecordBatch;
 use data_types::{partition_metadata::TableSummary, server_id::ServerId};
-use entry::{ClockValue, TableBatch};
+use entry::{ClockValue, TableBatch, WriteMetadata};
 use internal_types::selection::Selection;
 
 use crate::chunk::snapshot::ChunkSnapshot;
@@ -115,8 +115,7 @@ impl Chunk {
     /// Panics if the batch specifies a different name for the table in this Chunk
     pub fn write_table_batch(
         &mut self,
-        clock_value: ClockValue,
-        server_id: ServerId,
+        write_metadata: WriteMetadata,
         batch: TableBatch<'_>,
     ) -> Result<()> {
         let table_name = batch.name();
@@ -128,7 +127,7 @@ impl Chunk {
 
         let columns = batch.columns();
         self.table
-            .write_columns(&mut self.dictionary, clock_value, server_id, columns)
+            .write_columns(&mut self.dictionary, write_metadata, columns)
             .context(TableWrite { table_name })?;
 
         // Invalidate chunk snapshot
@@ -239,6 +238,10 @@ pub mod test_helpers {
     /// server id of 1.
     pub fn write_lp_to_chunk(lp: &str, chunk: &mut Chunk) -> Result<()> {
         let entry = lp_to_entry(lp);
+        let write_metadata = WriteMetadata::LogicalClock {
+            process_clock: ClockValue::try_from(5).unwrap(),
+            server_id: ServerId::try_from(1).unwrap(),
+        };
 
         for w in entry.partition_writes().unwrap() {
             let table_batches = w.table_batches();
@@ -253,11 +256,7 @@ pub mod test_helpers {
             );
 
             for batch in table_batches {
-                chunk.write_table_batch(
-                    ClockValue::try_from(5).unwrap(),
-                    ServerId::try_from(1).unwrap(),
-                    batch,
-                )?;
+                chunk.write_table_batch(write_metadata, batch)?;
             }
         }
 

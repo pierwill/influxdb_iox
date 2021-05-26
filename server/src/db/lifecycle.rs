@@ -371,7 +371,7 @@ mod tests {
     use super::*;
     use crate::db::catalog::chunk::ChunkMetrics;
     use data_types::{partition_metadata::TableSummary, server_id::ServerId};
-    use entry::{test_helpers::lp_to_entry, ClockValue};
+    use entry::{test_helpers::lp_to_entry, ClockValue, WriteMetadata};
     use object_store::{memory::InMemory, parsed_path, ObjectStore};
     use std::{
         convert::TryFrom,
@@ -389,19 +389,17 @@ mod tests {
         time_of_last_write: Option<i64>,
     ) -> Chunk {
         let entry = lp_to_entry("table1 bar=10 10");
+        let write_metadata = WriteMetadata::LogicalClock {
+            process_clock: ClockValue::try_from(5).unwrap(),
+            server_id: ServerId::try_from(1).unwrap(),
+        };
         let write = entry.partition_writes().unwrap().remove(0);
         let batch = write.table_batches().remove(0);
         let mut mb_chunk = mutable_buffer::chunk::Chunk::new(
             "table1",
             mutable_buffer::chunk::ChunkMetrics::new_unregistered(),
         );
-        mb_chunk
-            .write_table_batch(
-                ClockValue::try_from(5).unwrap(),
-                ServerId::try_from(1).unwrap(),
-                batch,
-            )
-            .unwrap();
+        mb_chunk.write_table_batch(write_metadata, batch).unwrap();
 
         let mut chunk =
             Chunk::new_open(id, "", mb_chunk, ChunkMetrics::new_unregistered()).unwrap();

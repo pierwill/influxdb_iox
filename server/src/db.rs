@@ -17,7 +17,7 @@ use datafusion::{
     catalog::{catalog::CatalogProvider, schema::SchemaProvider},
     physical_plan::SendableRecordBatchStream,
 };
-use entry::Entry;
+use entry::{Entry, WriteMetadata};
 use internal_types::{arrow::sort::sort_record_batch, selection::Selection};
 use lifecycle::LifecycleManager;
 use metrics::{KeyValue, MetricRegistry};
@@ -964,7 +964,10 @@ impl Db {
 
         // TODO: Direct writes to closing chunks
 
-        let process_clock = self.process_clock.next();
+        let write_metadata = WriteMetadata::LogicalClock {
+            process_clock: self.process_clock.next(),
+            server_id: self.server_id,
+        };
 
         if let Some(partitioned_writes) = entry.partition_writes() {
             for write in partitioned_writes {
@@ -984,7 +987,7 @@ impl Db {
                                 chunk.mutable_buffer().expect("cannot mutate open chunk");
 
                             mb_chunk
-                                .write_table_batch(process_clock, self.server_id, table_batch)
+                                .write_table_batch(write_metadata, table_batch)
                                 .context(WriteEntry {
                                     partition_key,
                                     chunk_id,
@@ -1006,7 +1009,7 @@ impl Db {
                             );
 
                             mb_chunk
-                                .write_table_batch(process_clock, self.server_id, table_batch)
+                                .write_table_batch(write_metadata, table_batch)
                                 .context(WriteEntryInitial { partition_key })?;
 
                             let new_chunk = partition
