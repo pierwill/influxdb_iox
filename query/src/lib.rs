@@ -22,6 +22,7 @@ pub mod group_by;
 pub mod plan;
 pub mod predicate;
 pub mod provider;
+pub mod pruning;
 pub mod util;
 
 pub use exec::context::{DEFAULT_CATALOG, DEFAULT_SCHEMA};
@@ -45,7 +46,7 @@ pub trait Database: Debug + Send + Sync {
 
     /// Returns a set of chunks within the partition with data that may match
     /// the provided predicate. If possible, chunks which have no rows that can
-    /// possibly match the predicate are omitted.
+    /// possibly match the predicate may be omitted.
     fn chunks(&self, predicate: &Predicate) -> Vec<Arc<Self::Chunk>>;
 
     /// Return a summary of all chunks in this database, in all partitions

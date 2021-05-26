@@ -39,8 +39,12 @@ use parquet_file::{
     },
     storage::Storage,
 };
-use query::predicate::{Predicate, PredicateBuilder};
-use query::{exec::Executor, Database, DEFAULT_SCHEMA};
+use query::{
+    exec::Executor,
+    predicate::{Predicate, PredicateBuilder},
+    pruning::{prune_chunks, PruningObserver},
+    Database, PartitionChunk, DEFAULT_SCHEMA,
+};
 use read_buffer::{Chunk as ReadBufferChunk, ChunkMetrics as ReadBufferChunkMetrics};
 use snafu::{ResultExt, Snafu};
 use std::{
@@ -194,11 +198,6 @@ pub enum Error {
 
     #[snafu(display("Error building sequenced entry: {}", source))]
     SequencedEntryError { source: entry::Error },
-
-    #[snafu(display("Error building sequenced entry: {}", source))]
-    SchemaConversion {
-        source: internal_types::schema::Error,
-    },
 
     #[snafu(display("Error sending Sequenced Entry to Write Buffer: {}", source))]
     WriteBufferError { source: buffer::Error },
@@ -1107,9 +1106,12 @@ impl Database for Db {
     /// Note there could/should be an error here (if the partition
     /// doesn't exist... but the trait doesn't have an error)
     fn chunks(&self, predicate: &Predicate) -> Vec<Arc<Self::Chunk>> {
-        self.catalog
+        let chunks = self
+            .catalog
             .state()
-            .filtered_chunks(predicate, DbChunk::snapshot)
+            .filtered_chunks(predicate, DbChunk::snapshot);
+
+        prune_chunks(self, chunks, predicate)
     }
 
     fn partition_keys(&self) -> Result<Vec<String>, Self::Error> {
@@ -1118,6 +1120,21 @@ impl Database for Db {
 
     fn chunk_summaries(&self) -> Result<Vec<ChunkSummary>> {
         Ok(self.catalog.state().chunk_summaries())
+    }
+}
+
+impl PruningObserver for Db {
+    type Observed = DbChunk;
+
+    fn was_pruned(&self, chunk: &Self::Observed) {
+        debug!(chunk_id = chunk.id(), "pruned chunk from query")
+    }
+
+    fn could_not_prune_chunk(&self, chunk: &Self::Observed, reason: &str) {
+        debug!(
+            chunk_id = chunk.id(),
+            reason, "could not prune chunk from query"
+        )
     }
 }
 

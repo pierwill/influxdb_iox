@@ -270,8 +270,8 @@ impl Catalog {
         chunks
     }
 
-    /// Calls `map` with every chunk matching `predicate` and returns a
-    /// collection of the results
+    /// Calls `map` with every chunk that may match `predicate`,
+    /// returning a collection of the results
     pub fn filtered_chunks<F, C>(&self, predicate: &Predicate, map: F) -> Vec<C>
     where
         F: Fn(&Chunk) -> C + Copy,
