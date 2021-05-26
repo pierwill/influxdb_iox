@@ -946,17 +946,21 @@ impl Db {
 
     /// Stores an entry based on the configuration.
     pub fn store_entry(&self, entry: Entry) -> Result<()> {
+        // Get all needed database rule values, then release the lock
         let rules = self.rules.read();
         let mutable_size_threshold = rules.lifecycle_rules.mutable_size_threshold;
-        if rules.lifecycle_rules.immutable {
+        let immutable = rules.lifecycle_rules.immutable;
+        let buffer_size_hard = rules.lifecycle_rules.buffer_size_hard;
+        std::mem::drop(rules);
+
+        if immutable {
             return DatabaseNotWriteable {}.fail();
         }
-        if let Some(hard_limit) = rules.lifecycle_rules.buffer_size_hard {
+        if let Some(hard_limit) = buffer_size_hard {
             if self.catalog.state().metrics().memory().total() > hard_limit.get() {
                 return HardLimitReached {}.fail();
             }
         }
-        std::mem::drop(rules);
 
         // TODO: Direct writes to closing chunks
 
