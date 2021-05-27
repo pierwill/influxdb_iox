@@ -1441,7 +1441,7 @@ mod tests {
             .eq(1.0)
             .unwrap();
 
-        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "mutable_buffer", 1111)
+        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "mutable_buffer", 1143)
             .unwrap();
 
         db.load_chunk_to_read_buffer("1970-01-01T00", "cpu", 0, &Default::default())
@@ -1463,7 +1463,7 @@ mod tests {
 
         // verify chunk size updated (chunk moved from closing to moving to moved)
         catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "mutable_buffer", 0).unwrap();
-        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "read_buffer", 1598).unwrap();
+        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "read_buffer", 1630).unwrap();
 
         db.write_chunk_to_object_store("1970-01-01T00", "cpu", 0, &Default::default())
             .await
@@ -1482,8 +1482,8 @@ mod tests {
             .eq(1.0)
             .unwrap();
 
-        let expected_parquet_size = 807;
-        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "read_buffer", 1598).unwrap();
+        let expected_parquet_size = 839;
+        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "read_buffer", 1630).unwrap();
         // now also in OS
         catalog_chunk_size_bytes_metric_eq(
             &test_db.metric_registry,
@@ -1653,7 +1653,7 @@ mod tests {
             .unwrap();
 
         // verify chunk size updated (chunk moved from moved to writing to written)
-        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "read_buffer", 1598).unwrap();
+        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "read_buffer", 1630).unwrap();
 
         // drop, the chunk from the read buffer
         db.drop_chunk(partition_key, "cpu", mb_chunk.id()).unwrap();
@@ -1663,7 +1663,7 @@ mod tests {
         );
 
         // verify size is reported until chunk dropped
-        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "read_buffer", 1598).unwrap();
+        catalog_chunk_size_bytes_metric_eq(&test_db.metric_registry, "read_buffer", 1630).unwrap();
         std::mem::drop(rb_chunk);
 
         // verify chunk size updated (chunk dropped from moved state)
@@ -1736,7 +1736,7 @@ mod tests {
                 ("svr_id", "1"),
             ])
             .histogram()
-            .sample_sum_eq(3915.0)
+            .sample_sum_eq(3979.0)
             .unwrap();
 
         let rb = collect_read_filter(&rb_chunk, "cpu").await;
@@ -1838,7 +1838,7 @@ mod tests {
                 ("svr_id", "10"),
             ])
             .histogram()
-            .sample_sum_eq(2405.0)
+            .sample_sum_eq(2469.0)
             .unwrap();
 
         // it should be the same chunk!
@@ -1947,7 +1947,7 @@ mod tests {
                 ("svr_id", "10"),
             ])
             .histogram()
-            .sample_sum_eq(2405.0)
+            .sample_sum_eq(2469.0)
             .unwrap();
 
         // Unload RB chunk but keep it in OS
@@ -1975,7 +1975,7 @@ mod tests {
                 ("svr_id", "10"),
             ])
             .histogram()
-            .sample_sum_eq(807.0)
+            .sample_sum_eq(839.0)
             .unwrap();
 
         // Verify data written to the parquet file in object store
@@ -2336,7 +2336,7 @@ mod tests {
                 Arc::from("cpu"),
                 0,
                 ChunkStorage::ReadBufferAndObjectStore,
-                2396, // size of RB and OS chunks
+                2460, // size of RB and OS chunks
                 1,
             ),
             ChunkSummary::new_without_timestamps(
@@ -2352,7 +2352,7 @@ mod tests {
                 Arc::from("cpu"),
                 0,
                 ChunkStorage::ClosedMutableBuffer,
-                2126,
+                2190,
                 1,
             ),
             ChunkSummary::new_without_timestamps(
@@ -2378,7 +2378,7 @@ mod tests {
                 .memory()
                 .mutable_buffer()
                 .get_total(),
-            100 + 2126 + 131
+            100 + 2190 + 131
         );
         assert_eq!(
             db.catalog
@@ -2387,11 +2387,11 @@ mod tests {
                 .memory()
                 .read_buffer()
                 .get_total(),
-            1589
+            1621
         );
         assert_eq!(
             db.catalog.state().metrics().memory().parquet().get_total(),
-            807
+            839
         );
     }
 
@@ -2441,29 +2441,17 @@ mod tests {
                             ColumnSummary {
                                 name: "bar".into(),
                                 influxdb_type: Some(InfluxDbType::Field),
-                                stats: Statistics::F64(StatValues {
-                                    min: Some(1.0),
-                                    max: Some(2.0),
-                                    count: 2,
-                                }),
+                                stats: Statistics::F64(StatValues::new(Some(1.0), Some(2.0), 2)),
                             },
                             ColumnSummary {
                                 name: "time".into(),
                                 influxdb_type: Some(InfluxDbType::Timestamp),
-                                stats: Statistics::I64(StatValues {
-                                    min: Some(1),
-                                    max: Some(2),
-                                    count: 2,
-                                }),
+                                stats: Statistics::I64(StatValues::new(Some(1), Some(2), 2)),
                             },
                             ColumnSummary {
                                 name: "baz".into(),
                                 influxdb_type: Some(InfluxDbType::Field),
-                                stats: Statistics::F64(StatValues {
-                                    min: Some(3.0),
-                                    max: Some(3.0),
-                                    count: 1,
-                                }),
+                                stats: Statistics::F64(StatValues::new(Some(3.0), Some(3.0), 1)),
                             },
                         ],
                     },
@@ -2473,20 +2461,12 @@ mod tests {
                             ColumnSummary {
                                 name: "foo".into(),
                                 influxdb_type: Some(InfluxDbType::Field),
-                                stats: Statistics::F64(StatValues {
-                                    min: Some(1.0),
-                                    max: Some(1.0),
-                                    count: 1,
-                                }),
+                                stats: Statistics::F64(StatValues::new(Some(1.0), Some(1.0), 1)),
                             },
                             ColumnSummary {
                                 name: "time".into(),
                                 influxdb_type: Some(InfluxDbType::Timestamp),
-                                stats: Statistics::I64(StatValues {
-                                    min: Some(1),
-                                    max: Some(1),
-                                    count: 1,
-                                }),
+                                stats: Statistics::I64(StatValues::new(Some(1), Some(1), 1)),
                             },
                         ],
                     },
@@ -2501,20 +2481,16 @@ mod tests {
                             ColumnSummary {
                                 name: "bar".into(),
                                 influxdb_type: Some(InfluxDbType::Field),
-                                stats: Statistics::F64(StatValues {
-                                    min: Some(1.0),
-                                    max: Some(1.0),
-                                    count: 1,
-                                }),
+                                stats: Statistics::F64(StatValues::new(Some(1.0), Some(1.0), 1)),
                             },
                             ColumnSummary {
                                 name: "time".into(),
                                 influxdb_type: Some(InfluxDbType::Timestamp),
-                                stats: Statistics::I64(StatValues {
-                                    min: Some(400000000000000),
-                                    max: Some(400000000000000),
-                                    count: 1,
-                                }),
+                                stats: Statistics::I64(StatValues::new(
+                                    Some(400000000000000),
+                                    Some(400000000000000),
+                                    1,
+                                )),
                             },
                         ],
                     },
@@ -2524,20 +2500,16 @@ mod tests {
                             ColumnSummary {
                                 name: "frob".into(),
                                 influxdb_type: Some(InfluxDbType::Field),
-                                stats: Statistics::F64(StatValues {
-                                    min: Some(3.0),
-                                    max: Some(3.0),
-                                    count: 1,
-                                }),
+                                stats: Statistics::F64(StatValues::new(Some(3.0), Some(3.0), 1)),
                             },
                             ColumnSummary {
                                 name: "time".into(),
                                 influxdb_type: Some(InfluxDbType::Timestamp),
-                                stats: Statistics::I64(StatValues {
-                                    min: Some(400000000000001),
-                                    max: Some(400000000000001),
-                                    count: 1,
-                                }),
+                                stats: Statistics::I64(StatValues::new(
+                                    Some(400000000000001),
+                                    Some(400000000000001),
+                                    1,
+                                )),
                             },
                         ],
                     },
