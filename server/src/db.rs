@@ -1723,7 +1723,7 @@ mod tests {
                 ("svr_id", "1"),
             ])
             .histogram()
-            .sample_sum_eq(316.0)
+            .sample_sum_eq(324.0)
             .unwrap();
 
         // RB chunk size
@@ -1736,7 +1736,7 @@ mod tests {
                 ("svr_id", "1"),
             ])
             .histogram()
-            .sample_sum_eq(3915.0)
+            .sample_sum_eq(3167.0)
             .unwrap();
 
         let rb = collect_read_filter(&rb_chunk, "cpu").await;

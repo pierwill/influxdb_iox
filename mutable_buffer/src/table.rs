@@ -17,7 +17,7 @@ use internal_types::{
 
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
-use arrow::{array::Array, record_batch::RecordBatch};
+use arrow::record_batch::RecordBatch;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -175,7 +175,7 @@ impl Table {
                 .entry(column_id)
                 .or_insert_with(|| Column::new(row_count_before_insert, influx_type));
 
-            column.append(&fb_column, dictionary).context(ColumnError {
+            column.append(&fb_column).context(ColumnError {
                 column: fb_column.name(),
             })?;
 
@@ -252,7 +252,7 @@ impl Table {
             Selection::All => self.all_columns_selection(dictionary),
             Selection::Some(cols) => self.specific_columns_selection(dictionary, cols),
         }?;
-        self.to_arrow_impl(dictionary, &selection)
+        self.to_arrow_impl(&selection)
     }
 
     pub fn schema(&self, dictionary: &Dictionary, selection: Selection<'_>) -> Result<Schema> {
@@ -279,17 +279,15 @@ impl Table {
     /// requested columns with index are tuples of column_name, column_index
     fn to_arrow_impl(
         &self,
-        dictionary: &Dictionary,
         selection: &TableColSelection<'_>,
     ) -> Result<RecordBatch> {
-        let encoded_dictionary = dictionary.values().to_arrow();
         let columns = selection
             .cols
             .iter()
             .map(|col| {
                 let column = self.column(col.column_id)?;
                 column
-                    .to_arrow(encoded_dictionary.data())
+                    .to_arrow()
                     .context(ColumnError {
                         column: col.column_name,
                     })
