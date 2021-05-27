@@ -31,7 +31,7 @@ use object_store::{path::parsed::DirsAndFileName, ObjectStore};
 use observability_deps::tracing::{debug, error, info};
 use parking_lot::{Mutex, RwLock};
 use parquet_file::{
-    catalog::{CatalogParquetInfo, CatalogState, PreservedCatalog},
+    catalog::{wipe as wipe_preserved_catalog, CatalogParquetInfo, CatalogState, PreservedCatalog},
     chunk::{Chunk as ParquetChunk, ChunkMetrics as ParquetChunkMetrics},
     cleanup::cleanup_unreferenced_parquet_files,
     metadata::{
@@ -379,7 +379,7 @@ pub async fn load_or_create_preserved_catalog(
             // https://github.com/influxdata/influxdb_iox/issues/1522)
             // broken => wipe for now (at least during early iterations)
             error!("cannot load catalog, so wipe it: {}", e);
-            PreservedCatalog::<Catalog>::wipe(&object_store, server_id, db_name).await?;
+            wipe_preserved_catalog(&object_store, server_id, db_name).await?;
 
             let metrics_domain =
                 metrics_registry.register_domain_with_labels("catalog", metric_labels.clone());
