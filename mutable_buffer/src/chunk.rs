@@ -72,8 +72,10 @@ impl ChunkMetrics {
 #[derive(Debug)]
 pub struct Chunk {
     /// `dictionary` maps &str -> DID. The DIDs are used in place of String or
-    /// str to avoid slow string operations. The same dictionary is used for
-    /// table names, tag names, tag values, and column names.
+    /// str to avoid slow string operations. This dictionary is only used for
+    /// column and table names
+    ///
+    /// TODO: Remove
     dictionary: Dictionary,
 
     /// The name of this table
