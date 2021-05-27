@@ -277,20 +277,15 @@ impl Table {
     /// Converts this table to an arrow record batch,
     ///
     /// requested columns with index are tuples of column_name, column_index
-    fn to_arrow_impl(
-        &self,
-        selection: &TableColSelection<'_>,
-    ) -> Result<RecordBatch> {
+    fn to_arrow_impl(&self, selection: &TableColSelection<'_>) -> Result<RecordBatch> {
         let columns = selection
             .cols
             .iter()
             .map(|col| {
                 let column = self.column(col.column_id)?;
-                column
-                    .to_arrow()
-                    .context(ColumnError {
-                        column: col.column_name,
-                    })
+                column.to_arrow().context(ColumnError {
+                    column: col.column_name,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
 

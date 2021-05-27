@@ -10,9 +10,9 @@ use arrow::{
 };
 use snafu::{ensure, Snafu};
 
-use arrow_util::bitset::{BitSet, iter_set_positions};
+use arrow_util::bitset::{iter_set_positions, BitSet};
 use arrow_util::string::PackedStringArray;
-use data_types::partition_metadata::{IsNan, Statistics, StatValues};
+use data_types::partition_metadata::{IsNan, StatValues, Statistics};
 use entry::Column as EntryColumn;
 use internal_types::schema::{InfluxColumnType, InfluxFieldType, TIME_DATA_TYPE};
 
