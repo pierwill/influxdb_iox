@@ -956,6 +956,11 @@ impl Db {
         if immutable {
             return DatabaseNotWriteable {}.fail();
         }
+
+        self.store_entry_in_mutable_buffer(entry, mutable_size_threshold, buffer_size_hard)
+    }
+
+    fn store_entry_in_mutable_buffer(&self, entry: Entry, mutable_size_threshold: Option<NonZeroUsize>, buffer_size_hard: Option<NonZeroUsize>) -> Result<()> {
         if let Some(hard_limit) = buffer_size_hard {
             if self.catalog.state().metrics().memory().total() > hard_limit.get() {
                 return HardLimitReached {}.fail();
