@@ -84,7 +84,7 @@ impl RowGroup {
                         schema::ColumnType::Tag(name.clone()),
                         c.logical_datatype(),
                         c.column_range(),
-                        c.distinct_count(),
+                        c.cardinality(),
                     );
 
                     all_columns_by_name.insert(name.clone(), all_columns.len());
@@ -99,7 +99,7 @@ impl RowGroup {
                         schema::ColumnType::Field(name.clone()),
                         c.logical_datatype(),
                         c.column_range(),
-                        c.distinct_count(),
+                        c.cardinality(),
                     );
                     all_columns_by_name.insert(name.clone(), all_columns.len());
                     all_columns.push(c);
@@ -113,7 +113,7 @@ impl RowGroup {
                         schema::ColumnType::Timestamp(name.clone()),
                         c.logical_datatype(),
                         c.column_range(),
-                        c.distinct_count(),
+                        c.cardinality(),
                     );
 
                     all_columns_by_name.insert(name.clone(), all_columns.len());
@@ -1465,9 +1465,9 @@ impl ColumnType {
     /// The number of distinct values if known
     pub fn distinct_count(&self) -> Option<NonZeroU64> {
         match &self {
-            Self::Tag(c) => c.distinct_count(),
-            Self::Field(c) => c.distinct_count(),
-            Self::Time(c) => c.distinct_count(),
+            Self::Tag(c) => c.cardinality(),
+            Self::Field(c) => c.cardinality(),
+            Self::Time(c) => c.cardinality(),
         }
     }
 

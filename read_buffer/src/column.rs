@@ -94,7 +94,7 @@ impl Column {
     }
 
     /// The number of distinct values if known
-    pub fn distinct_count(&self) -> Option<NonZeroU64> {
+    pub fn cardinality(&self) -> Option<NonZeroU64> {
         match &self {
             Self::String(_, data) => (data.cardinality() as u64).try_into().ok(),
             _ => None,

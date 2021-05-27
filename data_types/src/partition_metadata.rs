@@ -303,7 +303,9 @@ pub struct StatValues<T> {
     /// number of non-nil values in this column
     pub count: u64,
 
-    /// an estimate of the cardinality of this column
+    /// number of distinct values in this column if known
+    ///
+    /// This includes NULLs and NANs
     pub distinct_count: Option<NonZeroU64>,
 }
 
