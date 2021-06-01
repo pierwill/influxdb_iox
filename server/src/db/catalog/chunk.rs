@@ -323,8 +323,8 @@ impl Chunk {
         &self.stage
     }
 
-    pub fn lifecycle_action(&self) -> Option<&ChunkLifecycleAction> {
-        self.lifecycle_action.as_ref().map(|x| x.metadata())
+    pub fn lifecycle_action(&self) -> Option<&TaskTracker<ChunkLifecycleAction>> {
+        self.lifecycle_action.as_ref()
     }
 
     pub fn time_of_first_write(&self) -> Option<DateTime<Utc>> {
@@ -731,6 +731,23 @@ impl Chunk {
             }
         }
         self.lifecycle_action = None;
+        Ok(())
+    }
+
+    /// Abort the current lifecycle action if any
+    ///
+    /// Returns an error if the lifecycle action is still running
+    pub fn clear_lifecycle_action(&mut self) -> Result<()> {
+        if let Some(tracker) = &self.lifecycle_action {
+            if !tracker.is_complete() {
+                return Err(Error::AbortInProgress {
+                    partition_key: self.partition_key.to_string(),
+                    chunk_id: self.id,
+                    action: tracker.metadata().name().to_string(),
+                });
+            }
+            self.lifecycle_action = None
+        }
         Ok(())
     }
 }

@@ -98,6 +98,18 @@ pub enum Error {
     },
 
     #[snafu(display(
+        "Cannot abort an in-progress lifecycle action '{}' for chunk {}:{}",
+        action,
+        partition_key,
+        chunk_id
+    ))]
+    AbortInProgress {
+        partition_key: String,
+        chunk_id: u32,
+        action: String,
+    },
+
+    #[snafu(display(
         "Can not add an empty chunk to the catalog {}:{}",
         partition_key,
         chunk_id
