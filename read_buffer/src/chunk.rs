@@ -1,6 +1,7 @@
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     convert::TryFrom,
+    sync::Arc,
 };
 
 use metrics::{Gauge, GaugeValue, KeyValue};
@@ -17,8 +18,6 @@ use crate::schema::{AggregateType, ResultSchema};
 use crate::table;
 use crate::table::Table;
 use crate::{column::Statistics, row_group::RowGroup};
-
-type TableName = String;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -49,29 +48,24 @@ pub struct Chunk {
     // All metrics for the chunk.
     metrics: ChunkMetrics,
 
+    // The name of the table this chunk belongs to.
+    table_name: Arc<String>,
+
     // A chunk's data is held in a collection of mutable tables and
     // mutable meta data (`TableData`).
     //
     // Concurrent access to the `TableData` is managed via an `RwLock`, which is
     // taken in the following circumstances:
     //
-    //    * A lock is needed when updating a table with a new row group. It is held as long as it
+    //    * A lock is needed when updating the table with a new row group. It is held as long as it
     //      takes to update the table and update the chunk's meta-data. This is not long.
     //
-    //    * A lock is needed when removing an entire table. It is held as long as it takes to
-    //      remove the table from the `TableData`'s map, and re-construct new meta-data. This is
-    //      not long.
-    //
-    //    * A read lock is needed for all read operations over chunk data (tables). However, the
-    //      read lock is only taken for as long as it takes to determine which table data is needed
+    //    * A read lock is needed for all read operations over the chunk data. However, the
+    //      read lock is only taken for as long as it takes to determine which row group data is needed
     //      to perform the read, shallow-clone that data (via Arcs), and construct an iterator for
     //      executing that operation. Once the iterator is returned to the caller, the lock is
     //      freed. Therefore, read execution against the chunk is mostly lock-free.
     //
-    //    TODO(edd): `table_names` is currently one exception to execution that is mostly
-    //               lock-free. At the moment the read-lock is held for the duration of the
-    //               call. Whilst this execution will probably be in the order of micro-seconds
-    //               I plan to improve this situation in due course.
     pub(crate) chunk_data: RwLock<TableData>,
 }
 
@@ -83,49 +77,42 @@ pub(crate) struct TableData {
     /// Total number of row groups across all tables in the chunk.
     row_groups: usize,
 
-    /// The set of tables within this chunk. Each table is identified by a
-    /// measurement name.
-    data: BTreeMap<TableName, Table>,
-}
-
-impl Default for TableData {
-    fn default() -> Self {
-        Self {
-            rows: 0,
-            row_groups: 0,
-            data: BTreeMap::new(),
-        }
-    }
+    /// The table data within the chunk.
+    data: Option<Table>,
 }
 
 impl TableData {
-    // Returns an estimation of the total size of the contents of the tables
-    // stored under `TableData` in memory.
+    // Returns an estimation of the total size of the contents of the table.
     fn size(&self) -> usize {
-        self.data
-            .iter()
-            .map(|(k, table)| k.len() + table.size() as usize)
-            .sum::<usize>()
+        match self.data {
+            Some(table) => table.size(),
+            None => 0,
+        }
     }
 
-    // Returns an estimation of the total size of the contents of the tables for
-    // the chunk if all data was uncompressed and stored contiguously.
+    // Returns an estimation of the total size of the contents of the table if
+    // all the data in the table was uncompressed and stored contiguously.
     // `include_nulls` determines if NULL values should be ignored or included
     // in the calculation.
     fn size_raw(&self, include_nulls: bool) -> usize {
-        self.data
-            .iter()
-            .map(|(_, table)| table.size_raw(include_nulls))
-            .sum::<usize>()
+        match self.data {
+            Some(table) => table.size_raw(include_nulls),
+            None => 0,
+        }
     }
 }
 
 impl Chunk {
     /// Initialises a new `Chunk` with the associated chunk ID.
-    pub fn new(metrics: ChunkMetrics) -> Self {
+    pub fn new(
+        table_name: impl Into<String>,
+        table_data: RecordBatch,
+        metrics: ChunkMetrics,
+    ) -> Self {
         Self {
-            chunk_data: RwLock::new(TableData::default()),
+            table_name: Arc::new(table_name.into()),
             metrics,
+            chunk_data: RwLock::new(None),
         }
     }
 
@@ -134,11 +121,12 @@ impl Chunk {
     /// TODO(edd): potentially deprecate.
     pub(crate) fn new_with_table(table: Table, metrics: ChunkMetrics) -> Self {
         Self {
-            chunk_data: RwLock::new(TableData {
+            table_name: Arc::new(table.name().into()),
+            chunk_data: RwLock::new(Some(TableData {
                 rows: table.rows(),
                 row_groups: table.row_groups(),
-                data: vec![(table.name().to_owned(), table)].into_iter().collect(),
-            }),
+                data: table,
+            })),
             metrics,
         }
     }
@@ -152,7 +140,16 @@ impl Chunk {
     /// data.
     pub fn size(&self) -> usize {
         let table_data = self.chunk_data.read();
-        Self::base_size() + table_data.size()
+        match table_data {
+            Some(t) => t.size(),
+            None => 0,
+        };
+        Self::base_size()
+            + if let Some(t) = table_data {
+                t.size()
+            } else {
+                0
+            }
     }
 
     /// Return the estimated size for each column in the specific table.
