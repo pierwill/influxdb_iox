@@ -30,25 +30,18 @@ We're also hosting monthly tech talks and community office hours on the project 
 
 ## Quick Start
 
-To compile and run InfluxDB IOx from source, you'll need a Rust compiler and `clang`.
+1. Install dependencies
+1. Clone the repository
+1. Specify configuration
+1. Compile the server
+1. Start the server
 
-### Build a Docker Image
+You can also [Build a Docker image]().
 
-**BuildKit is required.**
-[Enable BuildKit](https://docs.docker.com/develop/develop-images/build_enhancements/#to-enable-buildkit-builds):
-- Use Docker version 18.09 or later
-- Enable BuildKit by default by setting `{ "features": { "buildkit": true } }` in the Docker engine config
-  - ...or run `docker build .` with env var `DOCKER_BUILDKIT=1`
+### Clone the repository
 
-To build the Docker image:
-```
-DOCKER_BUILDKIT=1 docker build .
-```
-
-### Cloning the Repository
-
-Using `git`, check out the code by cloning this repository. If you use the `git` command line, this
-looks like:
+Using `git`, check out the code by cloning this repository.
+If you use the `git` command line, this looks like:
 
 ```shell
 git clone git@github.com:influxdata/influxdb_iox.git
@@ -62,18 +55,22 @@ cd influxdb_iox
 
 The rest of the instructions assume you are in this directory.
 
-### Installing Rust
+
+
+### Install dependencies
 
 The easiest way to install Rust is by using [`rustup`], a Rust version manager.
 Follow the instructions on the `rustup` site for your operating system.
 
 [`rustup`]: https://rustup.rs/
 
-By default, `rustup` will install the latest stable version of Rust. InfluxDB IOx is currently
-using a nightly version of Rust to get performance benefits from the unstable `simd` feature. The
-exact nightly version is specified in the `rust-toolchain` file. When you're in the directory
-containing this repository's code, `rustup` will look in the `rust-toolchain` file and
-automatically install and use the correct Rust version for you. Test this out with:
+By default, `rustup` will install the latest stable version of Rust.
+InfluxDB IOx is currently using a nightly version of Rust to get performance benefits from the unstable `simd` feature.
+The exact nightly version is specified in the `rust-toolchain` file.
+When you're in the directory containing this repository's code,
+`rustup` will look in the `rust-toolchain` file 
+and automatically install and use the correct Rust version for you.
+Test this out with:
 
 ```shell
 rustc --version
@@ -81,11 +78,8 @@ rustc --version
 
 and you should see a nightly version of Rust!
 
-### Installing `clang`
-
-An installation of `clang` is required to build the [`croaring`] dependency - if
-it is not already present, it can typically be installed with the system
-package manager.
+`clang` is required to build the [`croaring`] dependency.
+If `clang` is not already present, it can typically be installed with the system package manager.
 
 ```shell
 clang --version
@@ -97,24 +91,21 @@ InstalledDir: /Library/Developer/CommandLineTools/usr/bin
 
 [`croaring`]: https://github.com/saulius/croaring-rs
 
-### Specifying Configuration
+### Specify configuration
 
-IOx is designed for running in modern containerized environments. As such, it
-takes its configuration as environment variables.
+IOx is designed to run in modern containerized environments.
+As such, it takes its configuration as environment variables.
 
-You can see a list of the current configuration values by running `influxdb_iox
---help`, as well as the specific subcommand config options such as `influxdb_iox
-run --help`.
+You can see a list of the current configuration values by running `influxdb_iox --help`, as well as the specific subcommand config options such as `influxdb_iox run --help`.
 
-Should you desire specifying config via a file, you can do so using a
-`.env` formatted file in the working directory. You can use the
-provided [example](docs/env.example) as a template if you want:
+Should you desire specifying config via a file, you can do so using a `.env` formatted file in the working directory.
+You can use the provided [example](docs/env.example) as a template if you want:
 
 ```shell
 cp docs/env.example .env
 ```
 
-### Compiling and Starting the Server
+### Compile and start the server
 
 InfluxDB IOx is built using Cargo, Rust's package manager and build tool.
 
@@ -157,7 +148,30 @@ cargo run --release -- server
 The server will, by default, start an HTTP API server on port `8080` and a gRPC server on port
 `8082`.
 
-### Writing and Reading Data
+### Build a Docker image
+
+Requirements:
+
+- BuildKit
+- Docker 18.09+
+
+[Enable BuildKit](https://docs.docker.com/develop/develop-images/build_enhancements/#to-enable-buildkit-builds):
+
+Enable BuildKit by default by setting `{ "features": { "buildkit": true } }` in the Docker engine config.
+Or run `docker build .` with env var `DOCKER_BUILDKIT=1`
+
+To build the Docker image:
+
+```
+DOCKER_BUILDKIT=1 docker build .
+```
+
+To compile and run InfluxDB IOx from source, you'll need a Rust compiler and `clang`.
+
+- Rust
+- Clang
+## First steps
+### Writing and reading data
 
 Each IOx instance requires a writer ID.
 This can be set one of 4 ways:
@@ -165,22 +179,20 @@ This can be set one of 4 ways:
 - set a flag `--writer-id 42`
 - use the API (not convered here)
 - use the CLI
-```shell
-influxdb_iox writer set 42
-```
+  ```shell
+  influxdb_iox writer set 42
+  ```
 
-To write data, you need to create a database. You can do so via the API or using the CLI. For example, to create a database called `company_sensors` with a 100MB mutable buffer, use this command:
+To write data, you need to create a database.
+You can do so via the API or using the CLI.
+For example, to create a database called `company_sensors` with a 100MB mutable buffer, use this command:
 
 ```shell
 influxdb_iox database create company_sensors
 ```
 
-Data can be stored in InfluxDB IOx by sending it in [line protocol]
-format to the `/api/v2/write` endpoint or using the CLI. For example,
-here is a command that will send the data in the
-`tests/fixtures/lineproto/metrics.lp` file in this repository,
-assuming that you're running the server on the default port into
-the `company_sensors` database, you can use:
+Data can be stored in InfluxDB IOx by sending it in [line protocol] format to the `/api/v2/write` endpoint or using the CLI.
+For example, here is a command that will send the data in the `tests/fixtures/lineproto/metrics.lp` file in this repository, assuming that you're running the server on the default port into the `company_sensors` database, you can use:
 
 ```shell
 influxdb_iox database write company_sensors tests/fixtures/lineproto/metrics.lp
@@ -194,26 +206,18 @@ influxdb_iox database query company_sensors "SELECT * FROM cpu LIMIT 10"
 
 ### Using the CLI
 
-To ease deloyment, IOx is packaged as a combined binary which has
-commands to start the IOx server as well as a CLI interface for
-interacting with and configuring such servers.
+To ease deloyment, IOx is packaged as a binary which has commands to start the IOx server as well as a CLI interface for interacting with and configuring such servers.
 
-The CLI itself is documented via extensive built in help which you can
-access by runing `influxdb_iox --help`
-
+The CLI itself is documented via extensive built-in help which you can access by runing `influxdb_iox --help`
 
 ### InfluxDB 2.0 compatibility
 
 InfluxDB IOx allows seamless interoperability with InfluxDB 2.0.
 
-InfluxDB 2.0 stores data in organization and buckets, but InfluxDB IOx
-stores data in named databases. IOx maps `organization` and `bucket`
-to a database named with the two parts separated by an underscore
-(`_`): `organization_bucket`.
+InfluxDB 2.0 stores data in organization and buckets, but InfluxDB IOx stores data in named databases.
+IOx maps `organization` and `bucket` to a database named with the two parts separated by an underscore (`_`): `organization_bucket`.
 
-Here's an example using [`curl`] command to send the same data into
-the `company_sensors` database using the InfluxDB 2.0 `/api/v2/write`
-API:
+Here's an example using [`curl`] command to send the same data into the `company_sensors` database using the InfluxDB 2.0 `/api/v2/write` API:
 
 ```shell
 curl -v "http://127.0.0.1:8080/api/v2/write?org=company&bucket=sensors" --data-binary @tests/fixtures/lineproto/metrics.lp
@@ -221,7 +225,6 @@ curl -v "http://127.0.0.1:8080/api/v2/write?org=company&bucket=sensors" --data-b
 
 [line protocol]: https://docs.influxdata.com/influxdb/v2.0/reference/syntax/line-protocol/
 [`curl`]: https://curl.se/
-
 
 ### Health Checks
 
@@ -232,7 +235,8 @@ $ curl http://127.0.0.1:8080/health
 OK
 ```
 
-The gRPC API implements the [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md). This can be tested with [grpc-health-probe](https://github.com/grpc-ecosystem/grpc-health-probe)
+The gRPC API implements the [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md).
+This can be tested with [`grpc-health-probe`](https://github.com/grpc-ecosystem/grpc-health-probe):
 
 ```console
 $ grpc_health_probe -addr 127.0.0.1:8082 -service influxdata.platform.storage.Storage
@@ -241,12 +245,10 @@ status: SERVING
 
 ### Manually calling gRPC API
 
-If you want to manually invoke one of the gRPC APIs, you can use any gRPC CLI client;
-a good one is [grpcurl](https://github.com/fullstorydev/grpcurl).
+If you want to manually invoke one of the gRPC APIs, you can use any gRPC CLI client; a good one is [grpcurl](https://github.com/fullstorydev/grpcurl).
 
-Tonic (the gRPC server library we're using) currently doesn't have support for gRPC reflection,
-hence you must pass all `.proto` files to your client. You can find a conventient `grpcurl` wrapper
-that does that in the `scripts` directory:
+Tonic (the gRPC server library we're using) currently doesn't have support for gRPC reflection, hence you must pass all `.proto` files to your client.
+You can find a conventient `grpcurl` wrapper that does that in the `scripts` directory:
 
 ```console
 $ ./scripts/grpcurl -plaintext 127.0.0.1:8082 list
