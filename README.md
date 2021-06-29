@@ -41,23 +41,6 @@ We're also hosting monthly tech talks and community office hours on the project 
 1. [Run health checks](#run-health-checks)
 1. [Manually call the gRPC API](#manually-call-the-grpc-api)
 
-### Clone the repository
-
-Using `git`, check out the code by cloning this repository.
-If you use the `git` command line, this looks like:
-
-```shell
-git clone git@github.com:influxdata/influxdb_iox.git
-```
-
-Then change into the directory containing the code:
-
-```shell
-cd influxdb_iox
-```
-
-The rest of the instructions assume you are in this directory.
-
 ### Install dependencies
 
 To compile and run InfluxDB IOx from source, you'll need the following:
@@ -101,6 +84,22 @@ If `clang` is not already present, it can typically be installed with the system
 
 [`croaring`]: https://github.com/saulius/croaring-rs
 
+### Clone the repository
+
+Using `git`, check out the code by cloning this repository.
+If you use the `git` command line, this looks like:
+
+```shell
+git clone git@github.com:influxdata/influxdb_iox.git
+```
+
+Then change into the directory containing the code:
+
+```shell
+cd influxdb_iox
+```
+
+The rest of the instructions assume you are in this directory.
 ### Configure the server
 
 InfluxDB IOx can be configured using either environment variables or a configutation file,
