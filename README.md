@@ -106,7 +106,7 @@ The rest of these instructions assume you are in this directory.
 InfluxDB IOx can be configured using either environment variables or a configutation file,
 making it suitable for deployment in containerized environments.
 
-For a list current configuration options values, run `influxdb_iox --help`.
+For a list configuration options, run `influxdb_iox --help`.
 For configuration options for specific subcommands, run `influxdb_iox <subcommand> --help`.
 
 To use a configuration file, use a `.env` file in the working directory.
