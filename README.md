@@ -28,7 +28,7 @@ We're also hosting monthly tech talks and community office hours on the project 
 * [Signup for upcoming IOx tech talks](https://www.influxdata.com/community-showcase/influxdb-tech-talks)
 * [Watch past IOx tech talks](https://www.youtube.com/playlist?list=PLYt2jfZorkDp-PKBS05kf2Yx2NrRyPAAz)
 
-## Quick start
+## Get started
 
 1. [Install dependencies](#install-dependencies)
 1. [Clone the repository](#clone-the-repository)
