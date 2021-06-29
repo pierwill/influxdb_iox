@@ -34,7 +34,7 @@ We're also hosting monthly tech talks and community office hours on the project 
 1. [Clone the repository](#clone-the-repository)
 1. [Configure the server](#configure-the-server)
 1. [Compile and start the server](#compile-and-start-the-server)  
-   (You can also [build a Docker image](#build-a-docker-image) to run InfluxDB IOx.)
+   (You can also [build a Docker image](#build-a-docker-image-optional) to run InfluxDB IOx.)
 1. [Write and read data](#write-and-read-data)
 1. [Use the CLI](#use-the-cli)
 1. [Read about InfluxDB 2.0 compatibility](#read-about-influxdb-2-0-compatibility)
