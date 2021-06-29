@@ -55,12 +55,6 @@ Follow the instructions for your operating system on the `rustup` site.
 
 `rustup` will check the [`rust-toolchain`](./rust-toolchain.toml) file and automatically install and use the correct Rust version for you.
 
-From the repository root, run
-
-```shell
-rustc --version
-```
-
 #### Clang
 
 Building InfluxDB IOx requires `clang` (for the [`croaring`] dependency).
