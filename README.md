@@ -37,7 +37,7 @@ We're also hosting monthly tech talks and community office hours on the project 
    (You can also [build a Docker image](#build-a-docker-image-optional) to run InfluxDB IOx.)
 1. [Write and read data](#write-and-read-data)
 1. [Use the CLI](#use-the-cli)
-1. [Use InfluxDB 2.0 API compatibility](#use-influxdb-2-0-api-compatibility)
+1. [Use InfluxDB 2.0 API compatibility](#use-influxdb-20-api-compatibility)
 1. [Run health checks](#run-health-checks)
 1. [Manually call the gRPC API](#manually-call-the-grpc-api)
 
