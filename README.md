@@ -53,19 +53,13 @@ To compile and run InfluxDB IOx from source, you'll need the following:
 The easiest way to install Rust is to use [`rustup`](https://rustup.rs/), a Rust version manager.
 Follow the instructions for your operating system on the `rustup` site.
 
-By default, `rustup` will install the latest stable version of Rust.
-InfluxDB IOx is currently using a nightly version of Rust
-(specified in the [`rust-toolchain`](./rust-toolchain) file)
-to get performance benefits from the unstable `simd` feature.
-`rustup` will check this file and automatically install and use the correct Rust version for you.
+`rustup` will check the [`rust-toolchain`](./rust-toolchain) file and automatically install and use the correct Rust version for you.
 
 From the repository root, run
 
 ```shell
 rustc --version
 ```
-
-You should see the nightly version of Rust in [`rust-toolchain`](./rust-toolchain).
 
 #### Clang
 
@@ -140,7 +134,7 @@ By default the server will start an HTTP server on port `8080` and a gRPC server
 You can also compile and run with one command:
 
 ```shell
-cargo run -- server
+cargo run -- run
 ```
 
 To compile for performance testing, build in release mode:
@@ -153,7 +147,7 @@ cargo build --release
 You can also run in release mode with one step:
 
 ```shell
-cargo run --release -- server
+cargo run --release -- run
 ```
 
 ### Build a Docker image (optional)
@@ -187,7 +181,7 @@ This can be set one of 4 ways:
 
 To write data, you need to create a database.
 You can do so via the API or using the CLI.
-For example, to create a database called `company_sensors` with a 100MB mutable buffer, use this command:
+For example, to create a database called `company_sensors`, use this command:
 
 ```shell
 influxdb_iox database create company_sensors
