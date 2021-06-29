@@ -33,7 +33,7 @@ We're also hosting monthly tech talks and community office hours on the project 
 1. [Install dependencies](#install-dependencies)
 1. [Clone the repository](#clone-the-repository)
 1. [Configure the server](#configure-the-server)
-1. [Compile and start the server](#compile-and-start-the-server)  
+1. [Compile and start the server](#compile-and-start-the-server)
    (You can also [build a Docker image](#build-a-docker-image) to run InfluxDB IOx.)
 1. [Write and read data](#write-and-read-data)
 1. [Use the CLI](#use-the-cli)
@@ -54,7 +54,7 @@ The easiest way to install Rust is to use [`rustup`](https://rustup.rs/), a Rust
 Follow the instructions for your operating system on the `rustup` site.
 
 By default, `rustup` will install the latest stable version of Rust.
-InfluxDB IOx is currently using a nightly version of Rust 
+InfluxDB IOx is currently using a nightly version of Rust
 (specified in the [`rust-toolchain`](./rust-toolchain) file)
 to get performance benefits from the unstable `simd` feature.
 `rustup` will check this file and automatically install and use the correct Rust version for you.
@@ -86,7 +86,7 @@ If `clang` is not already present, it can typically be installed with the system
 
 ### Clone the repository
 
-Using `git`, check out the code by cloning this repository.
+Clone this repository using `git`.
 If you use the `git` command line, this looks like:
 
 ```shell
@@ -99,7 +99,8 @@ Then change into the directory containing the code:
 cd influxdb_iox
 ```
 
-The rest of the instructions assume you are in this directory.
+The rest of these instructions assume you are in this directory.
+
 ### Configure the server
 
 InfluxDB IOx can be configured using either environment variables or a configutation file,
