@@ -128,6 +128,7 @@ cargo build
 ```
 
 This which will create a binary at `target/debug/influxdb_iox`.
+
 To start the InfluxDB IOx server, run:
 
 ```shell
