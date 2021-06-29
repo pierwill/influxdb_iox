@@ -28,15 +28,18 @@ We're also hosting monthly tech talks and community office hours on the project 
 * [Signup for upcoming IOx tech talks](https://www.influxdata.com/community-showcase/influxdb-tech-talks)
 * [Watch past IOx tech talks](https://www.youtube.com/playlist?list=PLYt2jfZorkDp-PKBS05kf2Yx2NrRyPAAz)
 
-## Quick Start
+## Quick start
 
-1. Install dependencies
-1. Clone the repository
-1. Specify configuration
-1. Compile the server
-1. Start the server
-
-You can also [Build a Docker image]().
+1. [Install dependencies](#install-dependencies)
+1. [Clone the repository](#clone-the-repository)
+1. [Configure the server](#configure-the-server)
+1. [Compile and start the server](#compile-and-start-the-server)  
+   (You can also [build a Docker image](#build-a-docker-image) to run InfluxDB IOx.)
+1. [Write and read data](#write-and-read-data)
+1. [Use the CLI](#use-the-cli)
+1. [Read about InfluxDB 2.0 compatibility](#read-about-influxdb-2-0-compatibility)
+1. [Run health checks](#run-health-checks)
+1. [Manually call the gRPC API](#manually-call-the-grpc-api)
 
 ### Clone the repository
 
@@ -55,31 +58,36 @@ cd influxdb_iox
 
 The rest of the instructions assume you are in this directory.
 
-
-
 ### Install dependencies
 
-The easiest way to install Rust is by using [`rustup`], a Rust version manager.
-Follow the instructions on the `rustup` site for your operating system.
+To compile and run InfluxDB IOx from source, you'll need the following:
 
-[`rustup`]: https://rustup.rs/
+- [Rust](#rust)
+- [Clang](#clang)
+
+#### Rust
+
+The easiest way to install Rust is to use [`rustup`](https://rustup.rs/), a Rust version manager.
+Follow the instructions for your operating system on the `rustup` site.
 
 By default, `rustup` will install the latest stable version of Rust.
-InfluxDB IOx is currently using a nightly version of Rust to get performance benefits from the unstable `simd` feature.
-The exact nightly version is specified in the `rust-toolchain` file.
-When you're in the directory containing this repository's code,
-`rustup` will look in the `rust-toolchain` file 
-and automatically install and use the correct Rust version for you.
-Test this out with:
+InfluxDB IOx is currently using a nightly version of Rust 
+(specified in the [`rust-toolchain`](./rust-toolchain) file)
+to get performance benefits from the unstable `simd` feature.
+`rustup` will check this file and automatically install and use the correct Rust version for you.
+
+From the repository root, run
 
 ```shell
 rustc --version
 ```
 
-and you should see a nightly version of Rust!
+You should see the nightly version of Rust in [`rust-toolchain`](./rust-toolchain).
 
-`clang` is required to build the [`croaring`] dependency.
-If `clang` is not already present, it can typically be installed with the system package manager.
+#### Clang
+
+Building InfluxDB IOx requires `clang` (for the [`croaring`] dependency).
+Check for `clang` by running `clang --version`.
 
 ```shell
 clang --version
@@ -89,17 +97,21 @@ Thread model: posix
 InstalledDir: /Library/Developer/CommandLineTools/usr/bin
 ```
 
+If `clang` is not already present, it can typically be installed with the system package manager.
+
 [`croaring`]: https://github.com/saulius/croaring-rs
 
-### Specify configuration
+### Configure the server
 
-IOx is designed to run in modern containerized environments.
-As such, it takes its configuration as environment variables.
+InfluxDB IOx can be configured using either environment variables or a configutation file,
+making it suitable for deployment in containerized environments.
 
-You can see a list of the current configuration values by running `influxdb_iox --help`, as well as the specific subcommand config options such as `influxdb_iox run --help`.
+For a list current configuration options values, run `influxdb_iox --help`.
+For configuration options for specific subcommands, run `influxdb_iox <subcommand> --help`.
 
-Should you desire specifying config via a file, you can do so using a `.env` formatted file in the working directory.
-You can use the provided [example](docs/env.example) as a template if you want:
+To use a configuration file, use a `.env` file in the working directory.
+See the provided [example configuration file](docs/env.example).
+To use the example configuration file, run:
 
 ```shell
 cp docs/env.example .env
@@ -115,50 +127,42 @@ To compile for development, run:
 cargo build
 ```
 
-which will create a binary in `target/debug` that you can run with:
+This which will create a binary at `target/debug/influxdb_iox`.
+To start the InfluxDB IOx server, run:
 
 ```shell
-./target/debug/influxdb_iox
+./target/debug/influxdb_iox run
 ```
 
-You can compile and run with one command by using:
+By default the server will start an HTTP server on port `8080` and a gRPC server on port `8082`.
+
+You can also compile and run with one command:
 
 ```shell
 cargo run -- server
 ```
 
-When compiling for performance testing, build in release mode by using:
+To compile for performance testing, build in release mode:
 
 ```shell
-cargo build --release
+cargo build --release && ./target/release/influxdb_iox run
 ```
 
-which will create the corresponding binary in `target/release`:
-
-```shell
-./target/release/influxdb_iox run
-```
-
-Similarly, you can do this in one step with:
+You can also do this in one step:
 
 ```shell
 cargo run --release -- server
 ```
 
-The server will, by default, start an HTTP API server on port `8080` and a gRPC server on port
-`8082`.
-
 ### Build a Docker image
 
-Requirements:
+Building the Docker image requires:
 
-- BuildKit
 - Docker 18.09+
+- BuildKit
 
-[Enable BuildKit](https://docs.docker.com/develop/develop-images/build_enhancements/#to-enable-buildkit-builds):
-
-Enable BuildKit by default by setting `{ "features": { "buildkit": true } }` in the Docker engine config.
-Or run `docker build .` with env var `DOCKER_BUILDKIT=1`
+To [enable BuildKit] by default, set `{ "features": { "buildkit": true } }` in the Docker engine configuration,
+or run `docker build` with`DOCKER_BUILDKIT=1`
 
 To build the Docker image:
 
@@ -166,12 +170,8 @@ To build the Docker image:
 DOCKER_BUILDKIT=1 docker build .
 ```
 
-To compile and run InfluxDB IOx from source, you'll need a Rust compiler and `clang`.
-
-- Rust
-- Clang
-## First steps
-### Writing and reading data
+[Enable BuildKit]: https://docs.docker.com/develop/develop-images/build_enhancements/#to-enable-buildkit-builds
+### Write and read data
 
 Each IOx instance requires a writer ID.
 This can be set one of 4 ways:
@@ -204,13 +204,13 @@ To query data stored in the `company_sensors` database:
 influxdb_iox database query company_sensors "SELECT * FROM cpu LIMIT 10"
 ```
 
-### Using the CLI
+### Use the CLI
 
 To ease deloyment, IOx is packaged as a binary which has commands to start the IOx server as well as a CLI interface for interacting with and configuring such servers.
 
 The CLI itself is documented via extensive built-in help which you can access by runing `influxdb_iox --help`
 
-### InfluxDB 2.0 compatibility
+### Read about InfluxDB 2.0 compatibility
 
 InfluxDB IOx allows seamless interoperability with InfluxDB 2.0.
 
@@ -226,7 +226,7 @@ curl -v "http://127.0.0.1:8080/api/v2/write?org=company&bucket=sensors" --data-b
 [line protocol]: https://docs.influxdata.com/influxdb/v2.0/reference/syntax/line-protocol/
 [`curl`]: https://curl.se/
 
-### Health Checks
+### Run health checks
 
 The HTTP API exposes a healthcheck endpoint at `/health`
 
@@ -243,7 +243,7 @@ $ grpc_health_probe -addr 127.0.0.1:8082 -service influxdata.platform.storage.St
 status: SERVING
 ```
 
-### Manually calling gRPC API
+### Manually call the gRPC API
 
 If you want to manually invoke one of the gRPC APIs, you can use any gRPC CLI client; a good one is [grpcurl](https://github.com/fullstorydev/grpcurl).
 
