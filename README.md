@@ -53,7 +53,7 @@ To compile and run InfluxDB IOx from source, you'll need the following:
 The easiest way to install Rust is to use [`rustup`](https://rustup.rs/), a Rust version manager.
 Follow the instructions for your operating system on the `rustup` site.
 
-`rustup` will check the [`rust-toolchain`](./rust-toolchain) file and automatically install and use the correct Rust version for you.
+`rustup` will check the [`rust-toolchain`](./rust-toolchain.toml) file and automatically install and use the correct Rust version for you.
 
 From the repository root, run
 
