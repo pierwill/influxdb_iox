@@ -156,7 +156,7 @@ You can also run in release mode with one step:
 cargo run --release -- server
 ```
 
-### Build a Docker image
+### Build a Docker image (optional)
 
 Building the Docker image requires:
 
