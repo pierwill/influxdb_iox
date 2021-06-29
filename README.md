@@ -146,10 +146,11 @@ cargo run -- server
 To compile for performance testing, build in release mode:
 
 ```shell
-cargo build --release && ./target/release/influxdb_iox run
+cargo build --release
+./target/release/influxdb_iox run
 ```
 
-You can also do this in one step:
+You can also run in release mode with one step:
 
 ```shell
 cargo run --release -- server
