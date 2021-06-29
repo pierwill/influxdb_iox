@@ -208,18 +208,21 @@ influxdb_iox database query company_sensors "SELECT * FROM cpu LIMIT 10"
 
 ### Use the CLI
 
-To ease deloyment, IOx is packaged as a binary which has commands to start the IOx server as well as a CLI interface for interacting with and configuring such servers.
+InfluxDB IOx is packaged as a binary with commands to start the IOx server,
+as well as a CLI interface for interacting with and configuring such servers.
 
-The CLI itself is documented via extensive built-in help which you can access by runing `influxdb_iox --help`
+The CLI itself is documented via built-in help which you can access by running `influxdb_iox --help`
 
 ### Read about InfluxDB 2.0 compatibility
 
 InfluxDB IOx allows seamless interoperability with InfluxDB 2.0.
 
-InfluxDB 2.0 stores data in organization and buckets, but InfluxDB IOx stores data in named databases.
-IOx maps `organization` and `bucket` to a database named with the two parts separated by an underscore (`_`): `organization_bucket`.
+Where InfluxDB 2.0 stores data in organizations and buckets,
+InfluxDB IOx stores data in _named databases_.
+IOx maps `organization` and `bucket` pairs to databases named with the two parts separated by an underscore (`_`):
+`organization_bucket`.
 
-Here's an example using [`curl`] command to send the same data into the `company_sensors` database using the InfluxDB 2.0 `/api/v2/write` API:
+Here's an example using [`curl`] to send data into the `company_sensors` database using the InfluxDB 2.0 `/api/v2/write` API:
 
 ```shell
 curl -v "http://127.0.0.1:8080/api/v2/write?org=company&bucket=sensors" --data-binary @tests/fixtures/lineproto/metrics.lp
@@ -247,7 +250,7 @@ status: SERVING
 
 ### Manually call the gRPC API
 
-If you want to manually invoke one of the gRPC APIs, you can use any gRPC CLI client; a good one is [grpcurl](https://github.com/fullstorydev/grpcurl).
+To manually invoke one of the gRPC APIs, use a gRPC CLI client such as [grpcurl](https://github.com/fullstorydev/grpcurl).
 
 Tonic (the gRPC server library we're using) currently doesn't have support for gRPC reflection, hence you must pass all `.proto` files to your client.
 You can find a conventient `grpcurl` wrapper that does that in the `scripts` directory:
