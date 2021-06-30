@@ -17,16 +17,22 @@ Persistence is through Parquet files in object storage.
 It is a design goal to support integration with other big data systems through object storage and Parquet specifically.
 
 For more details on the motivation behind the project and some of our goals, read through the [InfluxDB IOx announcement blog post](https://www.influxdata.com/blog/announcing-influxdb-iox/).
-If you prefer a video that covers a little bit of InfluxDB history and high level goals for [InfluxDB IOx you can watch Paul Dix's announcement talk from InfluxDays NA 2020](https://www.youtube.com/watch?v=pnwkAAyMp18).
-For more details on the motivation behind the selection of [Apache Arrow, Flight and Parquet, read this](https://www.influxdata.com/blog/apache-arrow-parquet-flight-and-their-ecosystem-are-a-game-changer-for-olap/).
+If you prefer a video that covers some InfluxDB history and high level goals for InfluxDB IOx, see [Paul Dix's announcement talk from InfluxDays NA 2020](https://www.youtube.com/watch?v=pnwkAAyMp18).
+For more details on the motivation behind the selection of Apache Arrow, Flight and Parquet, see [this blog post](https://www.influxdata.com/blog/apache-arrow-parquet-flight-and-their-ecosystem-are-a-game-changer-for-olap/).
 
 ## Project Status
 
-This project is very early and in active development. It isn't yet ready for testing, which is why we're not producing builds or documentation yet. If you're interested in following along with the project, drop into our community Slack channel #influxdb_iox. You can find [links to join here](https://community.influxdata.com/).
+This project is the early stages of development.
+If you're interested in following along with the project, drop into the `#influxdb_iox` community Slack channel.
+You can find [links to join here](https://community.influxdata.com/).
 
-We're also hosting monthly tech talks and community office hours on the project on the 2nd Wednesday of the month at 8:30 AM Pacific Time.
-* [Signup for upcoming IOx tech talks](https://www.influxdata.com/community-showcase/influxdb-tech-talks)
-* [Watch past IOx tech talks](https://www.youtube.com/playlist?list=PLYt2jfZorkDp-PKBS05kf2Yx2NrRyPAAz)
+We're also hosting monthly tech talks and community office hours on the project
+every second Wednesday of the month at 8:30 AM Pacific Time.
+
+We encourage you to
+
+- [sign up for upcoming IOx tech talks](https://www.influxdata.com/community-showcase/influxdb-tech-talks)
+- [watch past IOx tech talks](https://www.youtube.com/playlist?list=PLYt2jfZorkDp-PKBS05kf2Yx2NrRyPAAz)
 
 ## Get started
 
